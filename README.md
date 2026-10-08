@@ -110,6 +110,7 @@ Found a bug? Have a cool feature idea? We want to hear from you! Please drop an 
 - **[ciizerr](https://github.com/ciizerr)**: Massive thanks for fixing UI alignments, smoothing out the dashboard sizing, and polishing the calendar and weather tabs.
 - **[ChrisSch-dev @GitHub](https://github.com/ChrisSch-dev)**: Added album title support, word wrapping for weather descriptions, sleep resume fixes, and various performance/movement stability improvements.
 - **[thevioletto @GitHub](https://github.com/thevioletto)**: Added custom font support, Windows Do Not Disturb integration and status alerts, improved album art color extraction, reorganized settings into logical categories, and fixed various UI, media, and theme edge cases.
+- **[Retr0dev-jpg @GitHub](https://github.com/Retr0dev-jpg)**: Event-driven volume flyout with animated bar and default device switching, plus a calendar that follows the Windows locale for weekday initials and first day of the week (with a Monday/Sunday override).
 
 ---
 
