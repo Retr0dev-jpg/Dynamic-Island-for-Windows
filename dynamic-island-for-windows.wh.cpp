@@ -78,6 +78,7 @@ The Dynamic Island intelligently expands to display context-aware dashboards. Yo
 - **[ciizerr @GitHub](https://github.com/ciizerr)**: Improved the UI by refining layout alignment, fixing dashboard scaling, and enhancing calendar and weather module integration.
 - **[ChrisSch-dev @GitHub](https://github.com/ChrisSch-dev)**: Added album title support, word wrapping for weather descriptions, sleep resume fixes, and various performance/movement stability improvements.
 - **[thevioletto @GitHub](https://github.com/thevioletto)**: Added custom font support, Windows Do Not Disturb integration and status alerts, improved album art color sampling, reorganized settings, and addressed various UI/media edge cases.
+- **[David Ravelo (DavidRaveloU) @GitHub](https://github.com/DavidRaveloU)**: Added selectable audio spectrum styles with a live frequency analyzer, new progress bar styles, optional track-change animations for the title, cover flip, playback controls and pill cover spin, an optional clock in the collapsed media pill, and a brightness slider flyout.
 - **[Retr0dev-jpg @GitHub](https://github.com/Retr0dev-jpg)**: Event-driven volume flyout with animated bar and default device switching, plus a calendar that follows the Windows locale for weekday initials and first day of the week (with a Monday/Sunday override).
 
 ### 🤝 Contributing
@@ -135,6 +136,22 @@ We love community contributions! To ensure high-quality updates, please follow t
       - default: Default (Apple Pill)
       - w11: Windows 11 (Rounded Box)
       - notch: macOS Notch (Top Edge Flush)
+  - ProgressStyle: slim
+    $name: Progress bar style
+    $description: Look of the song progress bar in the expanded media player. Wavy and Squiggle animate while music is playing and flatten when paused.
+    $options:
+      - slim: Slim (classic bar)
+      - wavy: Wavy
+      - squiggle: Squiggle (slower, subtler wave)
+      - bar: Bar (thick bar with a line thumb)
+  - SpectrumStyle: bars
+    $name: Audio spectrum style
+    $description: Look of the live audio visualizer next to the album art (collapsed pill and expanded player). Pulse Orb, Plasma Thread and Peak Matrix use a real frequency analysis of the system audio, and each plays its own animation when the track changes.
+    $options:
+      - bars: Classic Bars
+      - led: Peak Matrix
+      - plasma: Plasma Thread
+      - orb: Pulse Orb
   - SizeScale: '1.0'
     $name: Size scale
     $description: Makes the entire island and its contents larger or smaller.
@@ -206,6 +223,12 @@ We love community contributions! To ensure high-quality updates, please follow t
       - fast: Fast (1.35x)
       - very-fast: Very Fast (1.65x)
       - ultra-fast: Ultra Fast (2.0x)
+  - ExpandedMediaTransitions: false
+    $name: Expanded player transitions
+    $description: Animate the hover player when the song changes or you press a control - title, artist and album text, the cover flip, and the previous / next / play-pause buttons. Turn off to make them change instantly.
+  - PillCoverSpin: false
+    $name: Pill cover spin
+    $description: Spin the album cover in the collapsed pill when the song changes. Turn off to swap the cover instantly.
   $name: Animations & Performance
 - Themes:
   - ThemePreset: obsidian
@@ -318,9 +341,15 @@ We love community contributions! To ensure high-quality updates, please follow t
   - MediaAutoExpand: false
     $name: Auto-expand on track change
     $description: Automatically expand the island when a new song or video starts playing. If disabled, album art updates smoothly in the collapsed pill without unprompted expansion.
+  - MediaPillClock: false
+    $name: Show clock in the collapsed media pill
+    $description: While media is playing, the collapsed pill also shows the current time on the left, separated from the album cover by a thin divider. Hovering still opens the normal player. Uses the same 12h/24h and seconds options as the clock below. Off by default.
   - Volume: true
     $name: Volume slider flyout
     $description: Shows a volume slider banner on the island when adjusting system volume. Disable if you prefer the default Windows volume flyout.
+  - Brightness: true
+    $name: Brightness slider flyout
+    $description: Shows a brightness slider banner on the island when you change the screen brightness. Works with a laptop's built-in display. Disable if you prefer the default Windows brightness flyout.
   - CapsLock: true
     $name: Caps Lock module
     $description: Shows an indicator when Caps Lock or Num Lock state changes.
@@ -663,6 +692,20 @@ namespace IdleStripLayout {
     constexpr float kWidthQuantum = 2.0f;
 }
 
+// Layout for the collapsed media pill when the optional clock is shown. A clock
+// section is added on the LEFT of the normal pill: [clock | divider] then the
+// usual cover ... spectrum. MeasureMediaPill (sizer) and DrawMedia (painter)
+// both read these so they cannot drift apart. With the option off the section
+// is 0 wide and the pill is exactly the old 150px.
+namespace MediaPillLayout {
+    constexpr float kBaseWidth = 150.0f;    // same as ActivityForKind's Media width
+    constexpr float kClockPadLeft = 14.0f;  // left edge -> clock text
+    constexpr float kSlotGap = 9.0f;        // clock text -> divider
+    constexpr float kDividerWidth = 1.0f;
+    constexpr float kDividerInsetY = 10.0f;
+    constexpr float kWidthQuantum = 2.0f;
+}
+
 // Layout for the game overlay strip. The size the island animates to is decided
 // in the render loop, while the contents are painted by DrawGameOverlay. Those
 // two kept their own copies of the card width, padding and height, so widening a
@@ -749,6 +792,7 @@ enum class IslandKind {
     Clipboard,
     Notification,
     Volume,
+    Brightness,
     BatteryLow,
     CapsLock,
     Device,
@@ -796,6 +840,22 @@ enum class AnimationStyle {
     Bouncy,
     Snappy,
 };
+
+enum class ProgressStyle {
+    Slim,
+    Wavy,
+    Squiggle,
+    Bar,
+};
+
+enum class SpectrumStyle {
+    Bars,
+    Orb,
+    Plasma,
+    Led,
+};
+
+constexpr int kSpectrumBands = 24;  // log-spaced bands from SpectrumAnalyzer, stored in SharedState::bands
 
 enum class CalendarAccentMode {
     Accent,  // persisted as "red", from when it was a hardcoded red
@@ -915,6 +975,10 @@ struct Settings {
     D2D1_COLOR_F customAccent = D2D1::ColorF(0x4cc9f0);
     int targetFps = 0; // 0 = Auto
     AnimationStyle animationStyle = AnimationStyle::Default;
+    ProgressStyle progressStyle = ProgressStyle::Slim;
+    SpectrumStyle spectrumStyle = SpectrumStyle::Bars;
+    bool expandedMediaAnim = false;   // hover player: text/cover flip/controls transitions
+    bool pillCoverAnim = false;      // collapsed pill: cover spin/drop
     float animationSpeed = 1.0f;
     bool media = true;
     bool mediaAutoExpand = false;
@@ -923,6 +987,7 @@ struct Settings {
     bool battery = true;
     bool progress = true;
     bool volume = true;
+    bool brightness = true;
     CalendarAccentMode calendarAccent = CalendarAccentMode::Accent;
     bool privacyDots = true;
     bool privacyDotsMic = true;
@@ -995,6 +1060,7 @@ struct Settings {
     std::wstring dateFormat;        // empty = locale default
     bool dateFirst = false;         // show date before time in the idle strip
     int firstDayOfWeek = -1;        // 0 = Sunday .. 6 = Saturday, -1 = follow Windows
+    bool mediaPillClock = false;    // show the clock inside the collapsed media pill
 
     // ── Localization (#35) ───────────────────────────────────────────────────
     std::wstring language = L"auto";
@@ -1083,6 +1149,12 @@ struct VolumeSnapshot {
     std::wstring deviceName;
     double expiresAt = 0.0;
     float displayPercent = 0.0f;  // animated bar level, set only on the render loop's snapshot copy
+};
+
+struct BrightnessSnapshot {
+    bool active = false;
+    int percent = 0;
+    double expiresAt = 0.0;
 };
 
 struct CapsLockSnapshot {
@@ -1186,6 +1258,7 @@ struct SharedState {
     ClipboardSnapshot clipboard;
     NotificationSnapshot notification;
     VolumeSnapshot volume;
+    BrightnessSnapshot brightness;
     CapsLockSnapshot capsLock;
     TimerSnapshot timer;
     DeviceSnapshot device;
@@ -1197,6 +1270,7 @@ struct SharedState {
     WeatherSnapshot weather;
     std::array<float, 48> waveform{};
     size_t waveformWrite = 0;
+    std::array<float, kSpectrumBands> bands{};  // smoothed 0..1 magnitude per band (low -> high)
     bool muted = false;
     std::vector<FileTrayItem> fileTrayItems;
 };
@@ -1271,6 +1345,8 @@ std::atomic<bool> g_layoutDirty = true;
 std::atomic<bool> g_clickExpanded = false;
 std::atomic<int> g_pressedMediaButton = -1;
 std::atomic<int> g_hoveredMediaButton = -1;
+std::atomic<unsigned> g_skipTriggerPrev{0};  // bumped on click, the render thread plays the prev button's animation
+std::atomic<unsigned> g_skipTriggerNext{0};  // same for the next button
 std::atomic<int> g_hoveredFileTrayRow = -1;  // row index under the cursor on the File Tray card
 std::atomic<bool> g_scrubbing = false;           // true while press-dragging the media timeline scrubber
 std::atomic<float> g_scrubDragFraction = 0.0f;   // live 0..1 drag position while g_scrubbing is true
@@ -1291,6 +1367,9 @@ FILETIME g_prevKernelTime = {};
 FILETIME g_prevUserTime = {};
 UINT g_shellHookMessage = 0;
 UINT g_taskbarCreatedMessage = 0;
+bool g_brightnessInitialized = false;
+int g_lastBrightness = -1;
+BYTE g_brightnessPowerSource = 255;  // ACLineStatus of the previous sample
 std::atomic<double> g_lastNudgeTime = 0.0;
 
 std::mutex g_bluetoothBatteryCacheMutex;
@@ -1484,6 +1563,7 @@ const wchar_t* Loc(const wchar_t* english) {
         {L"Bluetooth", {nullptr, L"Bluetooth", L"Bluetooth", L"Bluetooth", L"Bluetooth", L"Bluetooth", L"Bluetooth", L"Bluetooth", L"ब्लूटूथ", L"蓝牙", L"Bluetooth", L"블루투스"}},
         {L"Copied", {nullptr, L"Copié", L"Copiado", L"Kopiert", L"Copiado", L"Copiato", L"Скопировано", L"Kopyalandı", L"कॉपी किया गया", L"已复制", L"コピーしました", L"복사됨"}},
         {L"Volume", {nullptr, L"Volume", L"Volumen", L"Lautstärke", L"Volume", L"Volume", L"Громкость", L"Ses", L"वॉल्यूम", L"音量", L"音量", L"볼륨"}},
+        {L"Brightness", {nullptr, L"Luminosité", L"Brillo", L"Helligkeit", L"Brilho", L"Luminosità", L"Яркость", L"Parlaklık", L"चमक", L"亮度", L"明るさ", L"밝기"}},
         {L"Muted", {nullptr, L"Muet", L"Silenciado", L"Stumm", L"Sem som", L"Muto", L"Без звука", L"Sessiz", L"म्यूट", L"已静音", L"ミュート", L"음소거"}},
         {L"Low Battery", {nullptr, L"Batterie faible", L"Batería baja", L"Akku schwach", L"Bateria fraca", L"Batteria scarica", L"Батарея разряжена", L"Pil Az", L"बैटरी कम", L"电量低", L"バッテリー残量低下", L"배터리 부족"}},
         {L"Charging", {nullptr, L"En charge", L"Cargando", L"Wird geladen", L"Carregando", L"In carica", L"Зарядка", L"Şarj oluyor", L"चार्ज हो रहा है", L"正在充电", L"充電中", L"충전 중"}},
@@ -2066,6 +2146,30 @@ void LoadSettings() {
         next.animationStyle = AnimationStyle::Default;
     }
 
+    const std::wstring progressStr = GetStringSettingCopy(L"Appearance.ProgressStyle");
+    if (EqualsNoCase(progressStr, L"wavy")) {
+        next.progressStyle = ProgressStyle::Wavy;
+    } else if (EqualsNoCase(progressStr, L"squiggle")) {
+        next.progressStyle = ProgressStyle::Squiggle;
+    } else if (EqualsNoCase(progressStr, L"bar")) {
+        next.progressStyle = ProgressStyle::Bar;
+    } else {
+        next.progressStyle = ProgressStyle::Slim;  // default
+    }
+
+    const std::wstring spectrumStr = GetStringSettingCopy(L"Appearance.SpectrumStyle");
+    if (EqualsNoCase(spectrumStr, L"orb")) {
+        next.spectrumStyle = SpectrumStyle::Orb;
+    } else if (EqualsNoCase(spectrumStr, L"plasma")) {
+        next.spectrumStyle = SpectrumStyle::Plasma;
+    } else if (EqualsNoCase(spectrumStr, L"led")) {
+        next.spectrumStyle = SpectrumStyle::Led;
+    } else {
+        next.spectrumStyle = SpectrumStyle::Bars;  // default
+    }
+    next.expandedMediaAnim = Wh_GetIntSetting(L"Animations.ExpandedMediaTransitions") != 0;
+    next.pillCoverAnim = Wh_GetIntSetting(L"Animations.PillCoverSpin") != 0;
+
     const std::wstring speed = GetStringSettingWithFallback(L"Animations.AnimationSpeed", L"Appearance.AnimationSpeed", L"Behavior.AnimationSpeed");
     if (EqualsNoCase(speed, L"very-slow")) {
         next.animationSpeed = 0.5f;
@@ -2087,6 +2191,12 @@ void LoadSettings() {
     if (!next.volume) {
         std::lock_guard lock(g_stateMutex);
         g_state.volume.active = false;
+    }
+    next.brightness = Wh_GetIntSetting(L"Modules.Brightness") != 0;
+    if (!next.brightness) {
+        std::lock_guard lock(g_stateMutex);
+        g_state.brightness.active = false;
+        g_brightnessInitialized = false;
     }
     next.clipboard = Wh_GetIntSetting(L"Modules.Clipboard") != 0;
     next.statusCountdownProgress = Wh_GetIntSetting(L"Modules.StatusCountdownProgress") != 0;
@@ -2161,6 +2271,7 @@ void LoadSettings() {
     } else {
         next.firstDayOfWeek = -1;
     }
+    next.mediaPillClock = Wh_GetIntSetting(L"Modules.MediaPillClock") != 0;
 
     // ── Localization (#35) ───────────────────────────────────────────────────
     {
@@ -4773,6 +4884,162 @@ float SampleAudioAmplitude(BYTE* data, UINT32 frames, WAVEFORMATEX* format) {
     return Clamp(static_cast<float>(rms * 4.0), 0.0f, 1.0f);
 }
 
+// Goertzel filter bank over a sliding window of the mixed-down system audio.
+// Produces kSpectrumBands log-spaced magnitudes (50 Hz .. 14 kHz) with an
+// attack/release envelope and a slow auto-gain so quiet and loud tracks both
+// fill the visualizer. Only ever touched from the audio thread.
+struct SpectrumAnalyzer {
+    static constexpr size_t kWindow = 1024;
+    static constexpr size_t kHop = 512;
+
+    // A single Goertzel bin is only ~47 Hz wide, but the high bands are >1 kHz
+    // wide: one bin there would miss most of the energy. Each band therefore
+    // runs a few filters spread across its width and combines their power.
+    static constexpr int kMaxSub = 10;
+    static constexpr int kMaxFilters = kSpectrumBands * kMaxSub;
+
+    float ring[kWindow]{};
+    float window[kWindow]{};
+    float coeff[kMaxFilters]{};
+    int   subCount[kSpectrumBands]{};
+    int   subStart[kSpectrumBands]{};
+    float smooth[kSpectrumBands]{};
+    float agc = 0.04f;
+    float sampleRate = 0.0f;
+    size_t write = 0;
+    size_t sinceHop = 0;
+    bool windowReady = false;
+
+    void Configure(float rate) {
+        if (rate < 8000.0f) rate = 48000.0f;
+        if (!windowReady) {
+            for (size_t i = 0; i < kWindow; ++i) {
+                window[i] = 0.5f - 0.5f * std::cos(6.2831853f * i / (kWindow - 1));
+            }
+            windowReady = true;
+        }
+        if (rate == sampleRate) return;
+        sampleRate = rate;
+        const float fMin = 50.0f;
+        const float fMax = std::min(14000.0f, rate * 0.45f);
+        const float ratio = std::pow(fMax / fMin, 1.0f / (kSpectrumBands - 1));
+        const float halfStep = std::sqrt(ratio);
+        const float binHz = rate / kWindow;
+        int n = 0;
+        for (int b = 0; b < kSpectrumBands; ++b) {
+            const float fc = fMin * std::pow(ratio, static_cast<float>(b));
+            const float lo = fc / halfStep, hi = fc * halfStep;
+            const int subs = std::clamp(static_cast<int>((hi - lo) / (2.0f * binHz)), 1, kMaxSub);
+            subStart[b] = n;
+            subCount[b] = subs;
+            for (int k = 0; k < subs; ++k) {
+                const float f = lo + (hi - lo) * (k + 0.5f) / subs;
+                coeff[n++] = 2.0f * std::cos(6.2831853f * f / rate);
+            }
+        }
+    }
+
+    void Analyze() {
+        float frame[kWindow];
+        for (size_t i = 0; i < kWindow; ++i) {
+            frame[i] = ring[(write + i) % kWindow] * window[i];
+        }
+        float peak = 0.0f;
+        float raw[kSpectrumBands];
+        for (int b = 0; b < kSpectrumBands; ++b) {
+            float sum = 0.0f, mx = 0.0f;
+            for (int k = 0; k < subCount[b]; ++k) {
+                const float c = coeff[subStart[b] + k];
+                float s1 = 0.0f, s2 = 0.0f;
+                for (size_t i = 0; i < kWindow; ++i) {
+                    const float s0 = frame[i] + c * s1 - s2;
+                    s2 = s1;
+                    s1 = s0;
+                }
+                const float power = std::max(0.0f, s1 * s1 + s2 * s2 - c * s1 * s2);
+                sum += power;
+                mx = std::max(mx, power);
+            }
+            // Half mean, half strongest filter: broadband energy still counts, but a
+            // single strong partial is not averaged away.
+            const float power = 0.5f * (sum / subCount[b]) + 0.5f * mx;
+            // 4/kWindow normalises a Hann-windowed sinusoid back to ~its amplitude.
+            float amp = std::sqrt(power) * (4.0f / kWindow);
+            // Music has a steep spectral tilt; lift the highs so they stay visible.
+            const float tilt = 1.0f + 2.2f * static_cast<float>(b) / (kSpectrumBands - 1);
+            amp *= tilt;
+            raw[b] = amp;
+            peak = std::max(peak, amp);
+        }
+        agc = std::max(peak, agc * 0.9985f);
+        const float norm = 1.0f / std::max(agc, 0.02f);
+        for (int b = 0; b < kSpectrumBands; ++b) {
+            float v = std::sqrt(Clamp(raw[b] * norm, 0.0f, 1.0f));
+            // Silence must stay silent even though the auto-gain is boosted.
+            v *= Clamp(peak * 40.0f, 0.0f, 1.0f);
+            smooth[b] += (v > smooth[b] ? 0.65f : 0.14f) * (v - smooth[b]);
+        }
+    }
+
+    void Decay() {
+        for (int b = 0; b < kSpectrumBands; ++b) smooth[b] *= 0.88f;
+    }
+
+    // Returns true when at least one new analysis frame was produced.
+    bool Feed(BYTE* data, UINT32 frames, WAVEFORMATEX* format) {
+        if (!data || !frames || !format || !format->nChannels) { Decay(); return true; }
+        const bool isFloat =
+            format->wFormatTag == WAVE_FORMAT_IEEE_FLOAT ||
+            (format->wFormatTag == WAVE_FORMAT_EXTENSIBLE &&
+             format->cbSize >= sizeof(WAVEFORMATEXTENSIBLE) - sizeof(WAVEFORMATEX) &&
+             IsEqualGUID(reinterpret_cast<WAVEFORMATEXTENSIBLE*>(format)->SubFormat,
+                         kSubTypeIeeeFloat));
+        const bool is16 = format->wBitsPerSample == 16;
+        if (!isFloat && !is16) { Decay(); return true; }
+
+        Configure(static_cast<float>(format->nSamplesPerSec));
+        const UINT32 ch = format->nChannels;
+        bool produced = false;
+        for (UINT32 f = 0; f < frames; ++f) {
+            float mono = 0.0f;
+            if (isFloat) {
+                const float* p = reinterpret_cast<const float*>(data) + static_cast<size_t>(f) * ch;
+                for (UINT32 c = 0; c < ch; ++c) mono += p[c];
+            } else {
+                const int16_t* p = reinterpret_cast<const int16_t*>(data) + static_cast<size_t>(f) * ch;
+                for (UINT32 c = 0; c < ch; ++c) mono += p[c] / 32768.0f;
+            }
+            ring[write] = mono / ch;
+            write = (write + 1) % kWindow;
+            if (++sinceHop >= kHop) {
+                sinceHop = 0;
+                Analyze();
+                produced = true;
+            }
+        }
+        return produced;
+    }
+};
+
+SpectrumAnalyzer g_spectrumAnalyzer;
+
+void DecayAndPublishSpectrum();
+
+void PublishSpectrumBands() {
+    std::lock_guard lock(g_stateMutex);
+    for (int b = 0; b < kSpectrumBands; ++b) {
+        g_state.bands[b] = g_spectrumAnalyzer.smooth[b];
+    }
+}
+
+void DecayAndPublishSpectrum() {
+    g_spectrumAnalyzer.Decay();
+    std::lock_guard lock(g_stateMutex);
+    for (int b = 0; b < kSpectrumBands; ++b) {
+        g_state.bands[b] = g_spectrumAnalyzer.smooth[b];
+    }
+}
+
 void PushWaveformSample(float amplitude) {
     std::lock_guard lock(g_stateMutex);
 
@@ -4795,6 +5062,9 @@ void PushWaveformSample(float amplitude) {
 }
 
 void PushAudioChunks(BYTE* data, UINT32 frames, WAVEFORMATEX* format) {
+    if (g_spectrumAnalyzer.Feed(data, frames, format)) {
+        PublishSpectrumBands();
+    }
     if (!data || !frames || !format || !format->nChannels) {
         PushWaveformSample(0.0f);
         return;
@@ -5207,6 +5477,7 @@ DWORD WINAPI AudioThreadProc(void*) {
                     PushAudioChunks(data, frames, mixFormat);
                 } else {
                     PushWaveformSample(0.0f);
+                    DecayAndPublishSpectrum();
                 }
                 capture->ReleaseBuffer(frames);
                 ++packets;
@@ -5219,9 +5490,11 @@ DWORD WINAPI AudioThreadProc(void*) {
             if (packets > 0) {
                 if (amplitude <= 0.001f) {
                     PushWaveformSample(0.0f);
+                    DecayAndPublishSpectrum();
                 }
             } else {
                 PushWaveformSample(0.0f);
+                DecayAndPublishSpectrum();
             }
 
             // --- Stall watchdog -------------------------------------------
@@ -5630,6 +5903,88 @@ void UpdateSystemSnapshot(bool includeGpuStats, bool includeNetStats) {
     next.volumePercent = g_state.system.volumePercent;
     next.volumeMuted = g_state.system.volumeMuted;
     g_state.system = next;
+}
+
+// Built-in panel brightness (0-100), or -1 when there is no such panel (desktops)
+// or the query fails. Same IOCTL the Windows brightness slider uses, so no WMI.
+int ReadPanelBrightness(bool onAc) {
+    constexpr DWORD kIoctlQueryDisplayBrightness = 0x230498;  // CTL_CODE(FILE_DEVICE_VIDEO, 0x126, METHOD_BUFFERED, FILE_ANY_ACCESS)
+    struct DisplayBrightness {  // DISPLAY_BRIGHTNESS from ntddvdeo.h
+        UCHAR policy;           // bit 0 = AC level valid, bit 1 = DC level valid
+        UCHAR acBrightness;
+        UCHAR dcBrightness;
+    };
+
+    static double s_retryAt = 0.0;  // desktops have no LCD device, so do not retry every poll
+    const double now = NowSeconds();
+    if (now < s_retryAt) {
+        return -1;
+    }
+
+    HANDLE lcd = CreateFileW(L"\\\\.\\LCD", GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                             nullptr, OPEN_EXISTING, 0, nullptr);
+    if (lcd == INVALID_HANDLE_VALUE) {
+        lcd = CreateFileW(L"\\\\.\\LCD", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                          OPEN_EXISTING, 0, nullptr);
+    }
+    if (lcd == INVALID_HANDLE_VALUE) {
+        Wh_Log(L"Brightness: cannot open the LCD device (error %lu), retrying in 30s", GetLastError());
+        s_retryAt = now + 30.0;
+        return -1;
+    }
+
+    DisplayBrightness db = {};
+    DWORD returned = 0;
+    const bool ok = DeviceIoControl(lcd, kIoctlQueryDisplayBrightness, nullptr, 0, &db, sizeof(db),
+                                    &returned, nullptr) && returned >= sizeof(db);
+    const DWORD error = ok ? 0 : GetLastError();
+    CloseHandle(lcd);
+    if (!ok) {
+        Wh_Log(L"Brightness: query failed (error %lu, %lu bytes), retrying in 30s", error, returned);
+        s_retryAt = now + 30.0;
+        return -1;
+    }
+
+    static bool s_loggedFirst = false;
+    if (!s_loggedFirst) {
+        s_loggedFirst = true;
+        Wh_Log(L"Brightness: policy=%d ac=%d dc=%d", db.policy, db.acBrightness, db.dcBrightness);
+    }
+    // Pick the level for the current power source, falling back to the other one
+    // when the driver only reports one of them.
+    const bool hasAc = (db.policy & 1) != 0;
+    const bool hasDc = (db.policy & 2) != 0;
+    int level = onAc ? db.acBrightness : db.dcBrightness;
+    if (onAc && !hasAc && hasDc) {
+        level = db.dcBrightness;
+    } else if (!onAc && !hasDc && hasAc) {
+        level = db.acBrightness;
+    }
+    return ClampInt(level, 0, 100);
+}
+
+void UpdateBrightnessSnapshot() {
+    SYSTEM_POWER_STATUS power = {};
+    GetSystemPowerStatus(&power);
+    const int level = ReadPanelBrightness(power.ACLineStatus != 0);
+    if (level < 0) {
+        return;
+    }
+
+    std::lock_guard lock(g_stateMutex);
+    // Plugging in or unplugging swaps between the AC and battery levels, which is
+    // not the user moving the slider, so that sample only resets the baseline.
+    const bool changed = g_brightnessInitialized && level != g_lastBrightness &&
+                         power.ACLineStatus == g_brightnessPowerSource;
+    if (changed && g_settings.brightness) {
+        g_state.brightness.active = true;
+        g_state.brightness.percent = level;
+        g_state.brightness.expiresAt = NowSeconds() + 1.8;
+        TriggerNudge();
+    }
+    g_lastBrightness = level;
+    g_brightnessPowerSource = power.ACLineStatus;
+    g_brightnessInitialized = true;
 }
 
 // ---- Privacy indicator helpers ----
@@ -6486,6 +6841,7 @@ void DismissTransientState() {
     g_state.clipboard.active = false;
     g_state.notification.active = false;
     g_state.volume.active = false;
+    g_state.brightness.active = false;
     g_state.progress.active = false;
     g_state.capsLock.active = false;
     g_state.device.active = false;
@@ -6788,6 +7144,38 @@ struct MarqueeLayoutCache {
     DWRITE_TEXT_METRICS metrics{};
 };
 
+// One visible character of the song title, used by the title-change animation.
+struct TitleGlyph {
+    wchar_t ch0 = 0;       // first UTF-16 unit (used to match letters between titles)
+    wchar_t ch1 = 0;       // second unit of a surrogate pair, otherwise 0
+    float x = 0.0f;        // left edge inside the full title layout
+    float sx = 0.0f;       // on-screen left edge (relative to the title rect) when the animation started
+    bool  eligible = true; // visible when the animation started (only these get paired)
+    float w = 0.0f;
+    float h = 0.0f;
+    float seed = 0.0f;     // stable 0..1 value so each letter's smoke is unique
+    int match = -1;        // index of the paired glyph in the other title, or -1
+    ComPtr<IDWriteTextLayout> layout;  // this character alone, same format as the title
+};
+
+// Marquee state of one title at the moment the animation starts, mirroring what
+// DrawMarqueeText does (offset = fmod(now * speed, cycle)).
+struct TitleScroll {
+    bool scrolls = false;
+    float width = 0.0f;
+    float cycle = 0.0f;
+    float offset0 = 0.0f;
+};
+
+// State for the gentle swap animation of the artist / album lines.
+struct SwapTextState {
+    std::wstring shown;               // text currently on screen
+    std::wstring prev;                // text that is fading out
+    double start = -1.0;              // animation start, -1 = idle
+    double lastDrawn = -1.0;          // last frame this row was drawn
+    MarqueeLayoutCache prevCache;     // layout cache for the outgoing text
+};
+
 // Measured geometry of the collapsed idle strip, produced by
 // Renderer::MeasureIdleStrip. The render loop uses totalWidth to size the
 // island; DrawIdleDashboard uses the per-slot widths to place the clock, divider
@@ -6798,6 +7186,12 @@ struct IdleStripMetrics {
     bool hasWeather = false;
     bool hasPrivacy = false;
     float totalWidth = IdleStripLayout::kMinWidth;
+};
+
+struct MediaPillMetrics {
+    float clockWidth = 0.0f;
+    float sectionWidth = 0.0f;                       // clock + divider block on the left
+    float totalWidth = MediaPillLayout::kBaseWidth;  // content space, before sizeScale
 };
 
 // Substitutes '0' for every decimal digit before measuring.
@@ -6972,6 +7366,19 @@ class Renderer {
         calDayLargeFormat_.Reset();
         calGridFormat_.Reset();
         dwriteFactory_.Reset();
+        skipTriFull_.Reset();
+        skipTriNotch_.Reset();
+        titleOld_.clear();
+        titleNew_.clear();
+        titleAnimActive_ = false;
+        roundJoinStyle_.Reset();
+        artFlipOld_.Reset();
+        pillArtOld_.Reset();
+        pillArtLast_.Reset();
+        pillArtStart_ = -1.0;
+        pillArtInit_ = false;
+        swapArtist_.prevCache.layout.Reset();
+        swapAlbum_.prevCache.layout.Reset();
         d2dFactory_.Reset();
 
         if (oldBitmap_) {
@@ -7043,6 +7450,38 @@ class Renderer {
 
         total = std::ceil(total / IdleStripLayout::kWidthQuantum) * IdleStripLayout::kWidthQuantum;
         metrics.totalWidth = Clamp(total, IdleStripLayout::kMinWidth, IdleStripLayout::kMaxWidth);
+        return metrics;
+    }
+
+    // Collapsed media pill, with the optional clock. Returns content-space
+    // sizes; the render loop multiplies by sizeScale like every other collapsed
+    // width. The pill is the normal 150px plus a clock section on the left, sized
+    // to the clock string (so seconds, 12h with AM/PM or a large Text size just
+    // make it wider). Measured in the widest-digit form so the width does not
+    // wobble as the digits change.
+    MediaPillMetrics MeasureMediaPill(const SharedState& state, const Settings& settings) {
+        MediaPillMetrics metrics;
+        if (!settings.mediaPillClock) {
+            return metrics;
+        }
+
+        // Same reasoning as MeasureIdleStrip: textScale drives this font size.
+        EnsureTextFormats(settings.sizeScale, settings.fontFamily, settings.textScale);
+        IDWriteTextFormat* fmt = idleTextFormat_ ? idleTextFormat_.Get() : smallTextFormat_.Get();
+
+        SYSTEMTIME local = {};
+        GetLocalTime(&local);
+        const std::wstring clock = FormatIslandTime(local, settings.clockFollowSystem,
+                                                    settings.use24HourClock, settings.showSeconds);
+        // Same string, same format as the idle strip, so the cache is shared.
+        metrics.clockWidth =
+            MeasureTextWidthCached(WidestDigitForm(clock), fmt, idleClockWidthCache_);
+
+        float section = MediaPillLayout::kClockPadLeft + metrics.clockWidth +
+                        MediaPillLayout::kSlotGap + MediaPillLayout::kDividerWidth;
+        section = std::ceil(section / MediaPillLayout::kWidthQuantum) * MediaPillLayout::kWidthQuantum;
+        metrics.sectionWidth = section;
+        metrics.totalWidth = MediaPillLayout::kBaseWidth + section;
         return metrics;
     }
 
@@ -7523,6 +7962,9 @@ class Renderer {
                 break;
             case IslandKind::Volume:
                 DrawVolume(state, unscaledRect);
+                break;
+            case IslandKind::Brightness:
+                DrawBrightness(state, unscaledRect);
                 break;
             case IslandKind::CapsLock:
                 DrawCapsLock(state, unscaledRect);
@@ -9517,6 +9959,9 @@ class Renderer {
                    double now) {
         const float height = rect.bottom - rect.top;
 
+        expandedAnim_ = settings.expandedMediaAnim;
+        pillCoverAnim_ = settings.pillCoverAnim;
+
         PublishContentGeometry(rect);
 
         const float radius = ContentIslandRadius(height);
@@ -9553,7 +9998,7 @@ class Renderer {
                                                   rect.top + MediaLayout::kArtInsetY,
                                                   rect.left + MediaLayout::kArtInsetX + artSize,
                                                   rect.top + MediaLayout::kArtInsetY + artSize);
-                DrawAlbumArt(state.media, artRect, now, 16.0f, true);
+                DrawAlbumArtFlip(state.media, artRect, now, 16.0f, true);
 
                 const float waveW = 32.0f;
                 const float waveH = 20.0f;
@@ -9567,26 +10012,30 @@ class Renderer {
 
                 // Title — bold, prominent.
                 D2D1_RECT_F titleRect = D2D1::RectF(textLeft, rect.top + 34.0f, textRight, rect.top + 54.0f);
-                DrawMarqueeText(state.media.title.empty() ? std::wstring(Loc(L"Unknown")) : state.media.title,
-                                titleRect, textFormat_.Get(), textBrush_.Get(), now, 42.0f, marqueeTitleCache_);
+                const std::wstring titleText =
+                    state.media.title.empty() ? std::wstring(Loc(L"Unknown")) : state.media.title;
+                if (!DrawTitleTransition(titleText, titleRect, textBrush_.Get(), now, !state.media.title.empty())) {
+                    DrawMarqueeText(titleText, titleRect, textFormat_.Get(), textBrush_.Get(), now, 42.0f,
+                                    marqueeTitleCache_);
+                }
 
                 // Artist — muted below title.
                 D2D1_RECT_F artistRect = D2D1::RectF(textLeft, rect.top + 54.0f, textRight, rect.top + 74.0f);
                 mutedBrush_->SetOpacity(0.80f);
-                DrawMarqueeText(state.media.artist.empty() ? L"" : state.media.artist,
-                                artistRect, smallTextFormat_.Get(), mutedBrush_.Get(), now, 30.0f, marqueeArtistCache_);
+                DrawSwapMarquee(swapArtist_, state.media.artist, artistRect, smallTextFormat_.Get(),
+                                mutedBrush_.Get(), now, 30.0f, marqueeArtistCache_, 0.06f);
                 mutedBrush_->SetOpacity(0.75f);
 
                 if (!state.media.albumTitle.empty()) {
                     D2D1_RECT_F albumRect = D2D1::RectF(textLeft, rect.top + 68.0f, textRight, rect.top + 84.0f);
                     mutedBrush_->SetOpacity(0.70f);
-                    DrawMarqueeText(state.media.albumTitle, albumRect, smallTextFormat_.Get(),
-                                    mutedBrush_.Get(), now, 28.0f, marqueeAlbumCache_);
+                    DrawSwapMarquee(swapAlbum_, state.media.albumTitle, albumRect, smallTextFormat_.Get(),
+                                    mutedBrush_.Get(), now, 28.0f, marqueeAlbumCache_, 0.12f);
                     mutedBrush_->SetOpacity(0.75f);
                 }
 
                 if (state.media.playing) {
-                    DrawWaveform(state, waveRect);
+                    DrawSpectrum(state, waveRect, settings, now);
                 } else {
                     const float gap = 2.5f;
                     const float availableW = waveRect.right - waveRect.left;
@@ -9656,40 +10105,45 @@ class Renderer {
                 // The scrubber uses the shared accent track, so it matches the
                 // volume, battery and timer bars exactly. The bar thickens while
                 // dragging, which is the standard cue that it is grabbable.
-                const float barHalf = isDraggingThisBar ? 3.5f : 2.5f;
-                DrawAccentTrack(D2D1::RectF(barLeft, scrubberY - barHalf, barRight, scrubberY + barHalf),
-                                progress, barHalf);
+                if (settings.progressStyle != ProgressStyle::Slim) {
+                    DrawStyledProgress(settings.progressStyle, barLeft, barRight, scrubberY, progress,
+                                       isDraggingThisBar, state.media.playing, now);
+                } else {
+                    const float barHalf = isDraggingThisBar ? 3.5f : 2.5f;
+                    DrawAccentTrack(D2D1::RectF(barLeft, scrubberY - barHalf, barRight, scrubberY + barHalf),
+                                    progress, barHalf);
 
-                const D2D1_COLOR_F scrubColor =
-                    (currentAccent_.a > 0.0f) ? currentAccent_ : D2D1::ColorF(0x4cc9f0);
-                const float scrubW = (barRight - barLeft) * progress;
-                const float thumbX = barLeft + scrubW;
-                const float thumbR = isDraggingThisBar ? 6.5f : 4.5f;
+                    const D2D1_COLOR_F scrubColor =
+                        (currentAccent_.a > 0.0f) ? currentAccent_ : D2D1::ColorF(0x4cc9f0);
+                    const float scrubW = (barRight - barLeft) * progress;
+                    const float thumbX = barLeft + scrubW;
+                    const float thumbR = isDraggingThisBar ? 6.5f : 4.5f;
 
-                // Halo first so the thumb sits on top of it.
-                if (isDraggingThisBar) {
-                    ComPtr<ID2D1SolidColorBrush> thumbHalo;
-                    if (SUCCEEDED(target_->CreateSolidColorBrush(WithAlpha(scrubColor, 0.22f), &thumbHalo)) &&
-                        thumbHalo) {
-                        target_->FillEllipse(
-                            D2D1::Ellipse(D2D1::Point2F(thumbX, scrubberY), thumbR * 2.2f, thumbR * 2.2f),
-                            thumbHalo.Get());
+                    // Halo first so the thumb sits on top of it.
+                    if (isDraggingThisBar) {
+                        ComPtr<ID2D1SolidColorBrush> thumbHalo;
+                        if (SUCCEEDED(target_->CreateSolidColorBrush(WithAlpha(scrubColor, 0.22f), &thumbHalo)) &&
+                            thumbHalo) {
+                            target_->FillEllipse(
+                                D2D1::Ellipse(D2D1::Point2F(thumbX, scrubberY), thumbR * 2.2f, thumbR * 2.2f),
+                                thumbHalo.Get());
+                        }
                     }
-                }
 
-                // A white thumb with an accent ring reads more precisely against
-                // album art than a solid accent dot.
-                ComPtr<ID2D1SolidColorBrush> thumbFill;
-                if (SUCCEEDED(target_->CreateSolidColorBrush(
-                        D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.98f), &thumbFill)) && thumbFill) {
-                    target_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(thumbX, scrubberY), thumbR, thumbR),
-                                         thumbFill.Get());
-                }
-                ComPtr<ID2D1SolidColorBrush> thumbRing;
-                if (SUCCEEDED(target_->CreateSolidColorBrush(WithAlpha(scrubColor, 0.85f), &thumbRing)) &&
-                    thumbRing) {
-                    target_->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(thumbX, scrubberY), thumbR, thumbR),
-                                         thumbRing.Get(), 1.6f);
+                    // A white thumb with an accent ring reads more precisely against
+                    // album art than a solid accent dot.
+                    ComPtr<ID2D1SolidColorBrush> thumbFill;
+                    if (SUCCEEDED(target_->CreateSolidColorBrush(
+                            D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.98f), &thumbFill)) && thumbFill) {
+                        target_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(thumbX, scrubberY), thumbR, thumbR),
+                                             thumbFill.Get());
+                    }
+                    ComPtr<ID2D1SolidColorBrush> thumbRing;
+                    if (SUCCEEDED(target_->CreateSolidColorBrush(WithAlpha(scrubColor, 0.85f), &thumbRing)) &&
+                        thumbRing) {
+                        target_->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(thumbX, scrubberY), thumbR, thumbR),
+                                             thumbRing.Get(), 1.6f);
+                    }
                 }
 
                 // Controls. Positions come from MediaLayout so the hit test in
@@ -9751,9 +10205,17 @@ class Renderer {
             const float artPadding = 6.0f;
             const float artSize = height - artPadding * 2.0f;
 
-            D2D1_RECT_F artRect = D2D1::RectF(rect.left + artPadding, cy - artSize * 0.5f,
-                                              rect.left + artPadding + artSize, cy + artSize * 0.5f);
-            DrawAlbumArt(state.media, artRect, now, artSize * 0.5f, false);
+            // Optional clock section on the left. Zero wide when the option is
+            // off, so the cover sits exactly where it always did.
+            MediaPillMetrics pillMetrics;
+            if (settings.mediaPillClock && idleTextFormat_) {
+                pillMetrics = MeasureMediaPill(state, settings);
+            }
+            const float clockSection = pillMetrics.sectionWidth;
+
+            D2D1_RECT_F artRect = D2D1::RectF(rect.left + clockSection + artPadding, cy - artSize * 0.5f,
+                                              rect.left + clockSection + artPadding + artSize, cy + artSize * 0.5f);
+            DrawAlbumArtDrop(state.media, artRect, now, artSize * 0.5f);
 
             float shiftX = 0.0f;
             if (state.system.micActive || state.system.cameraActive) {
@@ -9763,7 +10225,7 @@ class Renderer {
             D2D1_RECT_F waveRect = D2D1::RectF(rect.right - 42.0f - shiftX, cy - 10.0f,
                                                rect.right - 14.0f - shiftX, cy + 10.0f);
             if (state.media.playing) {
-                DrawWaveform(state, waveRect);
+                DrawSpectrum(state, waveRect, settings, now);
             } else {
                 const float gap = 2.5f;
                 const float availableW = waveRect.right - waveRect.left;
@@ -9776,11 +10238,44 @@ class Renderer {
                 }
             }
 
+            // Clock + divider on the left, same face, size and time format as the
+            // idle strip. The pill was sized by MeasureMediaPill from the same
+            // numbers, and the widest-digit measurement means the live string
+            // always fits its slot. On hover the collapsed layer fades out and the
+            // normal player shows.
+            if (clockSection > 0.0f) {
+                SYSTEMTIME local = {};
+                GetLocalTime(&local);
+                const std::wstring clockText = FormatIslandTime(local, settings.clockFollowSystem,
+                                                                settings.use24HourClock,
+                                                                settings.showSeconds);
+                const float clockLeft = rect.left + MediaPillLayout::kClockPadLeft;
+                textBrush_->SetOpacity(0.96f);
+                target_->DrawTextW(clockText.c_str(), static_cast<UINT32>(clockText.size()),
+                                   idleTextFormat_.Get(),
+                                   D2D1::RectF(clockLeft, rect.top, clockLeft + pillMetrics.clockWidth, rect.bottom),
+                                   textBrush_.Get(), D2D1_DRAW_TEXT_OPTIONS_NONE);
+                textBrush_->SetOpacity(1.0f);
+
+                ComPtr<ID2D1SolidColorBrush> divider;
+                target_->CreateSolidColorBrush(
+                    WithAlpha(material_.hairline, material_.hairline.a * settingsOpacity_), &divider);
+                if (divider) {
+                    const float divX = clockLeft + pillMetrics.clockWidth + MediaPillLayout::kSlotGap;
+                    const float divW = MediaPillLayout::kDividerWidth;
+                    target_->FillRoundedRectangle(
+                        D2D1::RoundedRect(D2D1::RectF(divX, rect.top + MediaPillLayout::kDividerInsetY,
+                                                      divX + divW, rect.bottom - MediaPillLayout::kDividerInsetY),
+                                          divW * 0.5f, divW * 0.5f),
+                        divider.Get());
+                }
+            }
+
             target_->PopLayer();
         }
     }
 
-    void UpdateMediaButtonAnimations(double now) {
+    void UpdateMediaButtonAnimations(double now, bool playing) {
         float dt = 0.016f;
         if (lastMediaBtnTime_ > 0.0) {
             dt = static_cast<float>(std::max(0.001, std::min(now - lastMediaBtnTime_, 0.05)));
@@ -9803,13 +10298,198 @@ class Renderer {
             }
         }
 
+        // Play/pause morph. Animates only if the button was on screen a moment
+        // ago; otherwise (island was collapsed, first draw) it snaps to the state.
+        {
+            constexpr double kMorphDuration = 0.34;
+            const bool recentlyDrawn = playMorphLastDrawn_ >= 0.0 && (now - playMorphLastDrawn_) < 0.25;
+            playMorphLastDrawn_ = now;
+            const float target = playing ? 0.0f : 1.0f;
+            if (!playMorphInit_ || !recentlyDrawn || !expandedAnim_) {
+                playMorphInit_ = true;
+                playMorph_ = playMorphFrom_ = playMorphTarget_ = target;
+                playMorphStart_ = -1.0;
+            } else if (target != playMorphTarget_) {
+                playMorphFrom_ = playMorph_;
+                playMorphTarget_ = target;
+                playMorphStart_ = now;
+            }
+            if (playMorphStart_ >= 0.0) {
+                const float p = static_cast<float>((now - playMorphStart_) / kMorphDuration);
+                if (p >= 1.0f) {
+                    playMorph_ = playMorphTarget_;
+                    playMorphStart_ = -1.0;
+                } else {
+                    playMorph_ = playMorphFrom_ + (playMorphTarget_ - playMorphFrom_) * SkipEaseInOut(p);
+                    isStillAnimating = true;
+                }
+            }
+        }
+
+        // Depth-swap: start on a new click, then advance with wall-clock time.
+        constexpr double kSkipDuration = 0.46;
+        const unsigned trig[2] = {g_skipTriggerPrev.load(), g_skipTriggerNext.load()};
+        for (int i = 0; i < 2; ++i) {
+            if (trig[i] != skipSeenTrigger_[i]) {
+                skipSeenTrigger_[i] = trig[i];
+                lastSkipClickAt_ = now;
+                lastSkipDir_ = (i == 0) ? -1.0f : 1.0f;
+                // Ignore a re-click while the swap is still in its first half so
+                // the motion never snaps back; the command is sent regardless.
+                if (expandedAnim_ && (skipAnimStart_[i] < 0.0 || (now - skipAnimStart_[i]) / kSkipDuration >= 0.5)) {
+                    skipAnimStart_[i] = now;
+                }
+            }
+            if (skipAnimStart_[i] >= 0.0) {
+                const double p = (now - skipAnimStart_[i]) / kSkipDuration;
+                if (p >= 1.0) {
+                    skipAnimStart_[i] = -1.0;
+                    skipProgress_[i] = -1.0f;
+                } else {
+                    skipProgress_[i] = static_cast<float>(p);
+                    isStillAnimating = true;
+                }
+            } else {
+                skipProgress_[i] = -1.0f;
+            }
+        }
+
         if (isStillAnimating) {
             g_layoutDirty = true;
         }
     }
 
+    // ── Skip icon: two rounded triangles + "depth swap" animation ────────────
+    static constexpr float kSkipTriW = 0.626f;   // triangle width / height
+    static constexpr float kSkipPitch = 0.451f;  // front-left minus back-left, / height
+
+    HRESULT BuildRoundedTriangle(float x0, float w, float H, ComPtr<ID2D1PathGeometry>& out) {
+        const D2D1_POINT_2F v[3] = {
+            D2D1::Point2F(x0, -0.5f * H), D2D1::Point2F(x0, 0.5f * H), D2D1::Point2F(x0 + w, 0.0f)};
+        const float d[3] = {0.11f * H, 0.11f * H, 0.14f * H};
+        D2D1_POINT_2F a[3], b[3];
+        for (int i = 0; i < 3; ++i) {
+            const D2D1_POINT_2F p = v[(i + 2) % 3], n = v[(i + 1) % 3];
+            float px = p.x - v[i].x, py = p.y - v[i].y;
+            float nx = n.x - v[i].x, ny = n.y - v[i].y;
+            const float pl = std::sqrt(px * px + py * py), nl = std::sqrt(nx * nx + ny * ny);
+            a[i] = D2D1::Point2F(v[i].x + px / pl * d[i], v[i].y + py / pl * d[i]);
+            b[i] = D2D1::Point2F(v[i].x + nx / nl * d[i], v[i].y + ny / nl * d[i]);
+        }
+        ComPtr<ID2D1PathGeometry> geom;
+        HRESULT hr = d2dFactory_->CreatePathGeometry(&geom);
+        if (FAILED(hr) || !geom) return FAILED(hr) ? hr : E_FAIL;
+        ComPtr<ID2D1GeometrySink> sink;
+        hr = geom->Open(&sink);
+        if (FAILED(hr) || !sink) return FAILED(hr) ? hr : E_FAIL;
+        sink->BeginFigure(b[0], D2D1_FIGURE_BEGIN_FILLED);
+        sink->AddLine(a[1]);
+        sink->AddQuadraticBezier(D2D1::QuadraticBezierSegment(v[1], b[1]));
+        sink->AddLine(a[2]);
+        sink->AddQuadraticBezier(D2D1::QuadraticBezierSegment(v[2], b[2]));
+        sink->AddLine(a[0]);
+        sink->AddQuadraticBezier(D2D1::QuadraticBezierSegment(v[0], b[0]));
+        sink->EndFigure(D2D1_FIGURE_END_CLOSED);
+        hr = sink->Close();
+        if (FAILED(hr)) return hr;
+        out = geom;
+        return S_OK;
+    }
+
+    bool EnsureSkipGeometry() {
+        if (skipTriFull_ && skipTriNotch_) return true;
+        if (!d2dFactory_) return false;
+        const float H = MediaLayout::kNavButtonRadius * 0.78f;
+        const float w = kSkipTriW * H, pitch = kSkipPitch * H;
+
+        ComPtr<ID2D1PathGeometry> full, back, front;
+        if (FAILED(BuildRoundedTriangle(0.0f, w, H, full))) return false;
+        if (FAILED(BuildRoundedTriangle(0.0f, w, H, back))) return false;
+        if (FAILED(BuildRoundedTriangle(pitch, w, H, front))) return false;
+
+        // The back triangle is cut by a slightly enlarged copy of the front one,
+        // leaving a clean gap that works on translucent backgrounds too.
+        ComPtr<ID2D1TransformedGeometry> grown;
+        if (FAILED(d2dFactory_->CreateTransformedGeometry(
+                front.Get(), D2D1::Matrix3x2F::Scale(1.16f, 1.16f, D2D1::Point2F(pitch + w / 3.0f, 0.0f)),
+                &grown)) || !grown) return false;
+
+        ComPtr<ID2D1PathGeometry> notch;
+        if (FAILED(d2dFactory_->CreatePathGeometry(&notch)) || !notch) return false;
+        ComPtr<ID2D1GeometrySink> sink;
+        if (FAILED(notch->Open(&sink)) || !sink) return false;
+        if (FAILED(back->CombineWithGeometry(grown.Get(), D2D1_COMBINE_MODE_EXCLUDE, nullptr, 0.05f, sink.Get()))) {
+            return false;
+        }
+        if (FAILED(sink->Close())) return false;
+
+        skipTriFull_ = full;
+        skipTriNotch_ = notch;
+        return true;
+    }
+
+    static float SkipSmooth(float x) {            // smoothstep 0..1
+        x = Clamp(x, 0.0f, 1.0f);
+        return x * x * (3.0f - 2.0f * x);
+    }
+    static float SkipEaseInOut(float x) {         // easeInOutCubic
+        x = Clamp(x, 0.0f, 1.0f);
+        return x < 0.5f ? 4.0f * x * x * x : 1.0f - std::pow(-2.0f * x + 2.0f, 3.0f) / 2.0f;
+    }
+
+    // forward = true -> "next" (>>), false -> "previous" (<<, mirrored).
+    // p < 0 = resting state, otherwise animation progress 0..1.
+    void DrawSkipIcon(D2D1_POINT_2F center, bool forward, float p, float opacity, float press) {
+        if (!EnsureSkipGeometry()) return;
+
+        const float H = MediaLayout::kNavButtonRadius * 0.78f;
+        const float w = kSkipTriW * H, pitch = kSkipPitch * H;
+        const float pairLeft = -0.5f * (pitch + w);
+
+        D2D1_MATRIX_3X2_F oldTransform;
+        target_->GetTransform(&oldTransform);
+        const float sf = 1.0f - 0.13f * press;
+        const D2D1_MATRIX_3X2_F base =
+            D2D1::Matrix3x2F::Scale(forward ? 1.0f : -1.0f, 1.0f) *
+            D2D1::Matrix3x2F::Translation(center.x, center.y) *
+            D2D1::Matrix3x2F::Scale(sf, sf, center) * oldTransform;
+
+        auto fill = [&](ID2D1Geometry* g, float x, float scale, float alpha) {
+            if (alpha <= 0.003f) return;
+            const D2D1_MATRIX_3X2_F m =
+                D2D1::Matrix3x2F::Scale(scale, scale, D2D1::Point2F(w / 3.0f, 0.0f)) *
+                D2D1::Matrix3x2F::Translation(x, 0.0f) * base;
+            target_->SetTransform(m);
+            accentBrush_->SetOpacity(Clamp(opacity * alpha, 0.0f, 1.0f));
+            target_->FillGeometry(g, accentBrush_.Get());
+        };
+
+        if (p < 0.0f) {
+            fill(skipTriNotch_.Get(), pairLeft, 1.0f, 1.0f);
+            fill(skipTriFull_.Get(), pairLeft + pitch, 1.0f, 1.0f);
+        } else {
+            const float e = SkipEaseInOut(p);
+
+            // B (front): pushed forward, recedes and fades out.
+            const float bFade = 1.0f - SkipSmooth(p / 0.75f);
+            fill(skipTriFull_.Get(), pairLeft + pitch + pitch * 1.15f * e, 1.0f - 0.2f * e, bFade);
+
+            // A (back): glides into B's slot; its notch dissolves as it becomes the front.
+            const float s = SkipSmooth((p - 0.1f) / 0.8f);
+            fill(skipTriNotch_.Get(), pairLeft + pitch * e, 1.0f, 1.0f - s);
+            fill(skipTriFull_.Get(), pairLeft + pitch * e, 1.0f, s);
+
+            // A' (new back): grows in behind, where A used to be.
+            const float cIn = SkipSmooth((p - 0.3f) / 0.7f);
+            fill(skipTriNotch_.Get(), pairLeft - pitch * 0.45f * (1.0f - cIn), 0.7f + 0.3f * cIn, cIn);
+        }
+
+        target_->SetTransform(oldTransform);
+        accentBrush_->SetOpacity(1.0f);
+    }
+
     void DrawMediaControls(bool playing, D2D1_POINT_2F prev, D2D1_POINT_2F play, D2D1_POINT_2F next, double now) {
-        UpdateMediaButtonAnimations(now);
+        UpdateMediaButtonAnimations(now, playing);
         DrawMediaButton(prev, MediaLayout::kNavButtonRadius, 0, false);
         DrawMediaButton(play, MediaLayout::kPlayButtonRadius, playing ? 1 : 2, true);
         DrawMediaButton(next, MediaLayout::kNavButtonRadius, 3, false);
@@ -9845,6 +10525,18 @@ class Renderer {
         const float baseOpacity = primary ? (isHovered ? 1.0f : 0.88f) : (isHovered ? 0.92f : 0.62f);
         const float iconOpacity = Clamp(baseOpacity + (1.0f - baseOpacity) * press, 0.0f, 1.0f);
         accentBrush_->SetOpacity(iconOpacity);
+
+        if (kind == 0 || kind == 3) {
+            DrawSkipIcon(center, kind == 3, skipProgress_[kind == 3 ? 1 : 0], iconOpacity, press);
+            accentBrush_->SetOpacity(1.0f);
+            return;
+        }
+
+        if (kind == 1 || kind == 2) {
+            DrawPlayPauseIcon(center, iconOpacity, press);
+            accentBrush_->SetOpacity(1.0f);
+            return;
+        }
 
         const wchar_t* glyph = nullptr;
         IDWriteTextFormat* fmt = nullptr;
@@ -9916,14 +10608,7 @@ class Renderer {
         }
 
         if (!media.art.bgra.empty()) {
-            if (artGeneration_ != media.art.generation || !artBitmap_) {
-                D2D1_BITMAP_PROPERTIES props = D2D1::BitmapProperties(
-                    D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED));
-                target_->CreateBitmap(D2D1::SizeU(media.art.width, media.art.height),
-                                      media.art.bgra.data(), media.art.width * 4,
-                                      &props, &artBitmap_);
-                artGeneration_ = media.art.generation;
-            }
+            EnsureArtBitmap(media);
 
             D2D1_RECT_F dst = D2D1::RectF(rect.left, rect.top, rect.right, rect.bottom);
             target_->DrawBitmap(artBitmap_.Get(), dst, 1.0f,
@@ -10093,6 +10778,897 @@ class Renderer {
         }
     }
 
+    // ── Song-title change animation ──────────────────────────────────────────
+    // Scripts whose characters shape/reorder together can't be animated one
+    // glyph at a time, so those titles simply fall back to the plain redraw.
+    static bool TitleNeedsShaping(wchar_t c) {
+        return (c >= 0x0300 && c <= 0x036F) || (c >= 0x0590 && c <= 0x0DFF) ||
+               (c >= 0x0E00 && c <= 0x0EFF) || c == 0x200D;
+    }
+
+    // Same formula DrawMarqueeText uses for the title (speed 42), so the hand-off
+    // back to the normal marquee at the end of the animation doesn't jump.
+    static float TitleScrollOffset(const TitleScroll& sc, double now) {
+        return sc.scrolls ? std::fmod(static_cast<float>(now) * 42.0f, sc.cycle) : 0.0f;
+    }
+
+    // allLayouts = false keeps only the glyphs visible right now (the outgoing
+    // title is frozen, so nothing else of it will ever be seen).
+    bool BuildTitleGlyphs(const std::wstring& text, float wrapHeight, float available, double now,
+                          bool allLayouts, std::vector<TitleGlyph>& out, TitleScroll& scroll) {
+        out.clear();
+        scroll = TitleScroll{};
+        if (!dwriteFactory_ || !textFormat_ || text.empty() || text.size() > 120) return false;
+
+        ComPtr<IDWriteTextLayout> full;
+        if (FAILED(dwriteFactory_->CreateTextLayout(text.c_str(), static_cast<UINT32>(text.size()),
+                                                    textFormat_.Get(), 2000.0f, wrapHeight, &full)) || !full) {
+            return false;
+        }
+        DWRITE_TEXT_METRICS tm = {};
+        full->GetMetrics(&tm);
+        scroll.width = tm.widthIncludingTrailingWhitespace;
+        scroll.scrolls = scroll.width > available;
+        scroll.cycle = scroll.width + 38.0f;
+        scroll.offset0 = TitleScrollOffset(scroll, now);
+
+        for (UINT32 i = 0; i < text.size();) {
+            const wchar_t c = text[i];
+            if (TitleNeedsShaping(c)) return false;
+            const UINT32 len = (IS_HIGH_SURROGATE(c) && i + 1 < text.size() && IS_LOW_SURROGATE(text[i + 1])) ? 2 : 1;
+            if (c != L' ' && c != L'\t' && c != 0x00A0 && c != 0x3000) {
+                TitleGlyph g;
+                g.ch0 = c;
+                g.ch1 = (len == 2) ? text[i + 1] : 0;
+                float px = 0.0f, py = 0.0f;
+                DWRITE_HIT_TEST_METRICS htm = {};
+                if (FAILED(full->HitTestTextPosition(i, FALSE, &px, &py, &htm))) return false;
+                g.x = px;
+                g.sx = px - scroll.offset0;
+                g.eligible = (g.sx + htm.width > 0.0f) && (g.sx < available);
+                if (allLayouts || g.eligible) {
+                    if (FAILED(dwriteFactory_->CreateTextLayout(text.c_str() + i, len, textFormat_.Get(),
+                                                                2000.0f, wrapHeight, &g.layout)) || !g.layout) {
+                        return false;
+                    }
+                    DWRITE_TEXT_METRICS gm = {};
+                    g.layout->GetMetrics(&gm);
+                    g.w = gm.widthIncludingTrailingWhitespace;
+                    g.h = gm.height;
+                    const float hv = std::sin(static_cast<float>(i) * 12.9898f + static_cast<float>(c) * 78.233f) * 43758.5453f;
+                    g.seed = hv - std::floor(hv);
+                    out.push_back(std::move(g));
+                }
+            }
+            i += len;
+        }
+        return !out.empty();
+    }
+
+    // Longest common subsequence of identical, visible glyphs; ties prefer the
+    // pairs that travel the least. Order is preserved, so matched letters never cross.
+    static void MatchTitleGlyphs(std::vector<TitleGlyph>& a, std::vector<TitleGlyph>& b) {
+        const size_t n = a.size(), m = b.size();
+        std::vector<int> dp((n + 1) * (m + 1), 0);
+        auto at = [&](size_t i, size_t j) -> int& { return dp[i * (m + 1) + j]; };
+        auto same = [&](size_t i, size_t j) {
+            return a[i].eligible && b[j].eligible && a[i].ch0 == b[j].ch0 && a[i].ch1 == b[j].ch1;
+        };
+        auto pairScore = [&](size_t i, size_t j) {
+            return 1000 - static_cast<int>(std::min(std::fabs(a[i].sx - b[j].sx), 900.0f));
+        };
+        for (size_t i = 1; i <= n; ++i) {
+            for (size_t j = 1; j <= m; ++j) {
+                int best = std::max(at(i - 1, j), at(i, j - 1));
+                if (same(i - 1, j - 1)) best = std::max(best, at(i - 1, j - 1) + pairScore(i - 1, j - 1));
+                at(i, j) = best;
+            }
+        }
+        size_t i = n, j = m;
+        while (i > 0 && j > 0) {
+            if (same(i - 1, j - 1) && at(i, j) == at(i - 1, j - 1) + pairScore(i - 1, j - 1)) {
+                a[i - 1].match = static_cast<int>(j - 1);
+                b[j - 1].match = static_cast<int>(i - 1);
+                --i; --j;
+            } else if (at(i - 1, j) >= at(i, j - 1)) {
+                --i;
+            } else {
+                --j;
+            }
+        }
+    }
+
+    void StartTitleTransition(const std::wstring& oldText, const std::wstring& newText,
+                              D2D1_RECT_F rect, double now) {
+        const float h = rect.bottom - rect.top;
+        const float avail = rect.right - rect.left;
+        if (!BuildTitleGlyphs(oldText, h, avail, now, false, titleOld_, titleOldScroll_) ||
+            !BuildTitleGlyphs(newText, h, avail, now, true, titleNew_, titleNewScroll_)) {
+            titleOld_.clear();
+            titleNew_.clear();
+            return;
+        }
+        MatchTitleGlyphs(titleOld_, titleNew_);
+        titleAvail_ = avail;
+        titleAnimStart_ = now;
+        titleAnimDur_ = 1.0f;
+        titleAnimActive_ = true;
+    }
+
+    // t: 0 = solid, 1 = gone. Rises, sways, stretches upward and thins out; extra
+    // translucent copies trail above it so the edge looks soft instead of cut.
+    // Used in reverse (t counting down, smaller amp) to make letters condense in.
+    void DrawSmokeGlyph(const TitleGlyph& g, D2D1_POINT_2F origin, float t, float amp,
+                        ID2D1Brush* brush, float baseOpacity) {
+        if (t >= 0.999f || !g.layout) return;
+        if (t <= 0.0f) {
+            brush->SetOpacity(baseOpacity);
+            target_->DrawTextLayout(origin, g.layout.Get(), brush, D2D1_DRAW_TEXT_OPTIONS_NONE);
+            return;
+        }
+        D2D1_MATRIX_3X2_F oldT;
+        target_->GetTransform(&oldT);
+
+        const float seed = g.seed;
+        const float rise = 16.0f * amp * std::pow(t, 1.15f);
+        const float sway = std::sin(t * (4.5f + 3.0f * seed) + seed * 6.2832f) * 4.5f * amp * std::sqrt(t);
+        const float angle = (seed - 0.5f) * 50.0f * t * amp;
+        const float sx = 1.0f + 0.55f * t * amp;
+        const float sy = 1.0f + 1.40f * t * amp;
+        const float alpha = std::pow(1.0f - t, 1.6f) * baseOpacity;
+        const float soft = SkipSmooth(t / 0.25f);  // soft copies fade in as it starts to dissolve
+        const float spread = t * 3.2f * amp;
+        const D2D1_POINT_2F pivot = D2D1::Point2F(origin.x + g.w * 0.5f, origin.y + g.h * 0.82f);
+
+        for (int k = 0; k < 4; ++k) {
+            const float dx = (k == 1) ? -spread * 0.9f : (k == 3 ? spread * 0.9f : 0.0f);
+            const float dy = -static_cast<float>(k) * spread * 0.7f;
+            const float a = (k == 0) ? alpha * (1.0f - 0.55f * soft) : alpha * 0.28f * soft;
+            if (a <= 0.003f) continue;
+            brush->SetOpacity(Clamp(a, 0.0f, 1.0f));
+            target_->SetTransform(
+                D2D1::Matrix3x2F::Scale(sx, sy, pivot) *
+                D2D1::Matrix3x2F::Rotation(angle * (1.0f + 0.25f * static_cast<float>(k)), pivot) *
+                D2D1::Matrix3x2F::Translation(sway + dx, -rise + dy) * oldT);
+            target_->DrawTextLayout(origin, g.layout.Get(), brush, D2D1_DRAW_TEXT_OPTIONS_NONE);
+        }
+        target_->SetTransform(oldT);
+        brush->SetOpacity(baseOpacity);
+    }
+
+    // Returns true when it drew the title itself (animation running); false means
+    // the caller should draw the title the normal way.
+    bool DrawTitleTransition(const std::wstring& text, D2D1_RECT_F rect, ID2D1Brush* brush,
+                             double now, bool realTitle) {
+        // The title is only drawn while the expanded media card is visible, so a
+        // long gap means the old title was never on screen: just snap.
+        const bool recentlyDrawn = titleLastDrawn_ >= 0.0 && (now - titleLastDrawn_) < 0.25;
+        titleLastDrawn_ = now;
+
+        if (text != titleShown_) {
+            const std::wstring oldText = titleShown_;
+            const bool oldWasReal = !titleShownPlaceholder_;
+            titleShown_ = text;
+            titleShownPlaceholder_ = !realTitle;
+            titleAnimActive_ = false;
+            titleOld_.clear();
+            titleNew_.clear();
+            if (expandedAnim_ && recentlyDrawn && realTitle && oldWasReal && !oldText.empty()) {
+                StartTitleTransition(oldText, text, rect, now);
+            }
+        } else if (titleAnimActive_ && (!recentlyDrawn || !expandedAnim_)) {
+            titleAnimActive_ = false;
+            titleOld_.clear();
+            titleNew_.clear();
+        }
+
+        if (!titleAnimActive_) return false;
+
+        const float time = static_cast<float>(now - titleAnimStart_);
+        if (time >= titleAnimDur_) {
+            titleAnimActive_ = false;
+            titleOld_.clear();
+            titleNew_.clear();
+            return false;
+        }
+
+        const float baseOpacity = brush->GetOpacity();
+        const float avail = std::max(titleAvail_, 1.0f);
+        const float newOffset = TitleScrollOffset(titleNewScroll_, now);
+        target_->PushAxisAlignedClip(
+            D2D1::RectF(rect.left - 4.0f, rect.top - 20.0f, rect.right + 4.0f, rect.bottom + 6.0f),
+            D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+
+        // Old letters with no partner: dissolve into smoke, left to right. The old
+        // title is frozen at the spot where it was when the track changed.
+        const float oldSpan = std::max(std::min(titleOldScroll_.width, avail), 1.0f);
+        for (const TitleGlyph& g : titleOld_) {
+            if (g.match >= 0 || !g.eligible) continue;
+            const float f = Clamp(g.sx / oldSpan, 0.0f, 1.0f);
+            const float t = Clamp((time - 0.22f * f) / 0.60f, 0.0f, 1.0f);
+            DrawSmokeGlyph(g, D2D1::Point2F(rect.left + g.sx, rect.top), t, 1.0f, brush, baseOpacity);
+        }
+
+        // Letters present in both titles: glide to their new position (which keeps
+        // scrolling if the new title is a marquee).
+        brush->SetOpacity(baseOpacity);
+        for (const TitleGlyph& g : titleOld_) {
+            if (g.match < 0) continue;
+            const TitleGlyph& n = titleNew_[static_cast<size_t>(g.match)];
+            const float e = SkipEaseInOut((time - 0.04f) / 0.55f);
+            const float targetX = n.x - newOffset;
+            const float x = g.sx + (targetX - g.sx) * e;
+            const float lift = -1.5f * std::sin(3.14159265f * e);
+            target_->DrawTextLayout(D2D1::Point2F(rect.left + x, rect.top + lift), g.layout.Get(), brush,
+                                    D2D1_DRAW_TEXT_OPTIONS_NONE);
+        }
+
+        // New letters with no partner: condense out of the smoke. A scrolling title
+        // is drawn at its live marquee position, including the wrapped copy.
+        const float newSpan = std::max(std::min(titleNewScroll_.width, avail), 1.0f);
+        for (const TitleGlyph& g : titleNew_) {
+            if (g.match >= 0) continue;
+            const float xs = g.x - newOffset;
+            const float f = Clamp(xs / newSpan, 0.0f, 1.0f);
+            const float u = Clamp((time - 0.28f - 0.20f * f) / 0.50f, 0.0f, 1.0f);
+            if (xs + g.w > 0.0f && xs < avail) {
+                DrawSmokeGlyph(g, D2D1::Point2F(rect.left + xs, rect.top), 1.0f - u, 0.45f, brush, baseOpacity);
+            }
+            if (titleNewScroll_.scrolls) {
+                const float xs2 = xs + titleNewScroll_.cycle;
+                if (xs2 + g.w > 0.0f && xs2 < avail) {
+                    DrawSmokeGlyph(g, D2D1::Point2F(rect.left + xs2, rect.top), 1.0f - u, 0.45f, brush, baseOpacity);
+                }
+            }
+        }
+
+        brush->SetOpacity(baseOpacity);
+        target_->PopAxisAlignedClip();
+        g_layoutDirty = true;
+        return true;
+    }
+
+    // ── Progress bar styles (Wavy / Squiggle / Bar) ──────────────────────────
+    // Slim is the original bar and keeps its own code path in DrawMedia. The
+    // hit test is untouched: every shape here stays inside the scrubber's hit area.
+    void DrawStyledProgress(ProgressStyle style, float barLeft, float barRight, float cy,
+                            float progress, bool dragging, bool playing, double now) {
+        const float width = barRight - barLeft;
+        if (width <= 8.0f) return;
+        progress = Clamp(progress, 0.0f, 1.0f);
+        const float thumbX = barLeft + width * progress;
+
+        ComPtr<ID2D1SolidColorBrush> accent, track;
+        if (FAILED(target_->CreateSolidColorBrush(WithAlpha(material_.accent, 1.0f), &accent)) || !accent) return;
+        if (FAILED(target_->CreateSolidColorBrush(material_.raisedStrong, &track)) || !track) return;
+        EnsureRoundJoinStyle();
+
+        // Wave strength eases toward 0 when paused and back to 1 when playing.
+        {
+            const bool fresh = progressLastTime_ >= 0.0 && (now - progressLastTime_) < 0.25;
+            const float target = playing ? 1.0f : 0.0f;
+            if (!fresh) {
+                progressAmp_ = target;
+            } else {
+                const float dt = static_cast<float>(now - progressLastTime_);
+                progressAmp_ += (target - progressAmp_) * (1.0f - std::exp(-dt / 0.16f));
+                if (std::fabs(target - progressAmp_) < 0.004f) {
+                    progressAmp_ = target;
+                } else {
+                    g_layoutDirty = true;
+                }
+            }
+            progressLastTime_ = now;
+        }
+        const float amp = progressAmp_;
+
+        auto drawEndDot = [&](float x) {
+            ComPtr<ID2D1SolidColorBrush> dot;
+            if (SUCCEEDED(target_->CreateSolidColorBrush(WithAlpha(material_.accent, 0.9f), &dot)) && dot) {
+                target_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(x, cy), 1.7f, 1.7f), dot.Get());
+            }
+        };
+
+        if (style == ProgressStyle::Bar) {
+            // Thick rounded bar split by a vertical line thumb, with a dot at the end.
+            const float half = dragging ? 4.5f : 4.0f;
+            const float gap = dragging ? 5.0f : 4.0f;
+            const float fillRight = thumbX - gap;
+            const float trackLeft = thumbX + gap;
+            if (fillRight - barLeft > 1.0f) {
+                target_->FillRoundedRectangle(
+                    D2D1::RoundedRect(D2D1::RectF(barLeft, cy - half, fillRight, cy + half), half, half),
+                    accent.Get());
+            }
+            if (barRight - trackLeft > 1.0f) {
+                target_->FillRoundedRectangle(
+                    D2D1::RoundedRect(D2D1::RectF(trackLeft, cy - half, barRight, cy + half), half, half),
+                    track.Get());
+                drawEndDot(barRight - half);
+            }
+            const float tw = dragging ? 4.0f : 3.0f;
+            const float th = dragging ? 24.0f : 20.0f;
+            target_->FillRoundedRectangle(
+                D2D1::RoundedRect(D2D1::RectF(thumbX - tw * 0.5f, cy - th * 0.5f, thumbX + tw * 0.5f, cy + th * 0.5f),
+                                  tw * 0.5f, tw * 0.5f),
+                accent.Get());
+            return;
+        }
+
+        // Wavy and Squiggle: a travelling sine wave up to the thumb, a thin flat
+        // line after it. Squiggle is shorter, shallower and about half the speed.
+        const bool wavy = (style == ProgressStyle::Wavy);
+        const float A = (wavy ? 3.2f : 1.8f) * amp;
+        const float lambda = wavy ? 26.0f : 15.0f;
+        const double freq = wavy ? 0.9 : 0.45;
+        const float strokeW = wavy ? 3.4f : 3.0f;
+        const float k = 6.2831853f / lambda;
+        const float phase = static_cast<float>(std::fmod(now * freq, 1.0) * 6.2831853);
+        const float endTaper = wavy ? 16.0f : 10.0f;  // flattens into the thumb
+
+        if (thumbX - barLeft > 1.5f) {
+            std::vector<D2D1_POINT_2F> pts;
+            pts.reserve(static_cast<size_t>((thumbX - barLeft) / 1.25f) + 3);
+            for (float x = barLeft;; x += 1.25f) {
+                const float xx = std::min(x, thumbX);
+                const float taper = std::min(SkipSmooth((xx - barLeft) / 10.0f),
+                                             SkipSmooth((thumbX - xx) / endTaper));
+                pts.push_back(D2D1::Point2F(xx, cy + A * taper * std::sin(k * (xx - barLeft) - phase)));
+                if (x >= thumbX) break;
+            }
+            ComPtr<ID2D1PathGeometry> path;
+            if (SUCCEEDED(d2dFactory_->CreatePathGeometry(&path)) && path) {
+                ComPtr<ID2D1GeometrySink> sink;
+                if (SUCCEEDED(path->Open(&sink)) && sink) {
+                    sink->BeginFigure(pts[0], D2D1_FIGURE_BEGIN_HOLLOW);
+                    if (pts.size() > 1) sink->AddLines(pts.data() + 1, static_cast<UINT32>(pts.size() - 1));
+                    sink->EndFigure(D2D1_FIGURE_END_OPEN);
+                    if (SUCCEEDED(sink->Close())) {
+                        target_->DrawGeometry(path.Get(), accent.Get(), strokeW, roundJoinStyle_.Get());
+                    }
+                }
+            }
+        }
+
+        const float thumbR = dragging ? 7.0f : 5.5f;
+        const float trackStart = thumbX + (wavy ? thumbR + 3.0f : 4.0f);
+        if (barRight - trackStart > 2.0f) {
+            const float tw = wavy ? 2.2f : 2.8f;
+            target_->DrawLine(D2D1::Point2F(trackStart, cy), D2D1::Point2F(barRight - 2.0f, cy),
+                              track.Get(), tw, roundJoinStyle_.Get());
+            if (wavy) drawEndDot(barRight - 1.7f);
+        }
+
+        if (wavy) {
+            if (dragging) {
+                ComPtr<ID2D1SolidColorBrush> halo;
+                if (SUCCEEDED(target_->CreateSolidColorBrush(WithAlpha(material_.accent, 0.22f), &halo)) && halo) {
+                    target_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(thumbX, cy), thumbR * 2.0f, thumbR * 2.0f),
+                                         halo.Get());
+                }
+            }
+            target_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(thumbX, cy), thumbR, thumbR), accent.Get());
+        } else {
+            const float tw = dragging ? 4.0f : 3.0f;
+            const float th = dragging ? 22.0f : 18.0f;
+            target_->FillRoundedRectangle(
+                D2D1::RoundedRect(D2D1::RectF(thumbX - tw * 0.5f, cy - th * 0.5f, thumbX + tw * 0.5f, cy + th * 0.5f),
+                                  tw * 0.5f, tw * 0.5f),
+                accent.Get());
+        }
+    }
+
+    // ── Play/pause morph ─────────────────────────────────────────────────────
+    // Both icons are two quads with matching vertices: the pause bars become the
+    // two halves of the play triangle (the right half collapses into the tip).
+    // Corners are rounded by stroking with a round join, so every shape is the
+    // inset polygon plus kPlayPauseCorner on each side.
+    static constexpr float kPlayPauseCorner = 1.5f;
+
+    struct PlayPauseShapes {
+        D2D1_POINT_2F pause[8];
+        D2D1_POINT_2F play[8];
+    };
+
+    static const PlayPauseShapes& GetPlayPauseShapes() {
+        static const PlayPauseShapes shapes = [] {
+            PlayPauseShapes s = {};
+            const float rr = kPlayPauseCorner;
+            const float bx0 = 2.1f, bx1 = 6.5f, by = 7.5f;
+            // Left bar, then right bar: TL, TR, BR, BL.
+            s.pause[0] = D2D1::Point2F(-bx1 + rr, -by + rr);
+            s.pause[1] = D2D1::Point2F(-bx0 - rr, -by + rr);
+            s.pause[2] = D2D1::Point2F(-bx0 - rr,  by - rr);
+            s.pause[3] = D2D1::Point2F(-bx1 + rr,  by - rr);
+            s.pause[4] = D2D1::Point2F( bx0 + rr, -by + rr);
+            s.pause[5] = D2D1::Point2F( bx1 - rr, -by + rr);
+            s.pause[6] = D2D1::Point2F( bx1 - rr,  by - rr);
+            s.pause[7] = D2D1::Point2F( bx0 + rr,  by - rr);
+
+            // Triangle (optically centred), split by a shared edge T-U.
+            const D2D1_POINT_2F A = D2D1::Point2F(-5.5f, -7.5f);
+            const D2D1_POINT_2F B = D2D1::Point2F(-5.5f,  7.5f);
+            const D2D1_POINT_2F C = D2D1::Point2F( 7.5f,  0.0f);
+            const D2D1_POINT_2F T = D2D1::Point2F( 1.0f, -3.75f);
+            const D2D1_POINT_2F U = D2D1::Point2F( 1.0f,  3.75f);
+            const float la = std::hypot(B.x - C.x, B.y - C.y);
+            const float lb = std::hypot(C.x - A.x, C.y - A.y);
+            const float lc = std::hypot(A.x - B.x, A.y - B.y);
+            const float per = la + lb + lc;
+            const float ix = (la * A.x + lb * B.x + lc * C.x) / per;
+            const float iy = (la * A.y + lb * B.y + lc * C.y) / per;
+            const float area = 0.5f * std::fabs((B.x - A.x) * (C.y - A.y) - (B.y - A.y) * (C.x - A.x));
+            const float inr = 2.0f * area / per;
+            const float k = (inr - rr) / inr;
+            auto shrink = [&](D2D1_POINT_2F p) {
+                return D2D1::Point2F(ix + k * (p.x - ix), iy + k * (p.y - iy));
+            };
+            s.play[0] = shrink(A); s.play[1] = shrink(T); s.play[2] = shrink(U); s.play[3] = shrink(B);
+            s.play[4] = shrink(T); s.play[5] = shrink(C); s.play[6] = shrink(C); s.play[7] = shrink(U);
+            return s;
+        }();
+        return shapes;
+    }
+
+    bool EnsureRoundJoinStyle() {
+        if (roundJoinStyle_) return true;
+        if (!d2dFactory_) return false;
+        return SUCCEEDED(d2dFactory_->CreateStrokeStyle(
+                   D2D1::StrokeStyleProperties(D2D1_CAP_STYLE_ROUND, D2D1_CAP_STYLE_ROUND,
+                                               D2D1_CAP_STYLE_ROUND, D2D1_LINE_JOIN_ROUND, 10.0f,
+                                               D2D1_DASH_STYLE_SOLID, 0.0f),
+                   nullptr, 0, &roundJoinStyle_)) && roundJoinStyle_;
+    }
+
+    void DrawPlayPauseIcon(D2D1_POINT_2F center, float opacity, float press) {
+        if (!d2dFactory_) return;
+        EnsureRoundJoinStyle();
+        const PlayPauseShapes& sh = GetPlayPauseShapes();
+        const float m = Clamp(playMorph_, 0.0f, 1.0f);
+
+        D2D1_POINT_2F p[8];
+        for (int i = 0; i < 8; ++i) {
+            p[i] = D2D1::Point2F(sh.pause[i].x + (sh.play[i].x - sh.pause[i].x) * m,
+                                 sh.pause[i].y + (sh.play[i].y - sh.pause[i].y) * m);
+        }
+
+        ComPtr<ID2D1PathGeometry> quad[2];
+        for (int q = 0; q < 2; ++q) {
+            if (FAILED(d2dFactory_->CreatePathGeometry(&quad[q])) || !quad[q]) return;
+            ComPtr<ID2D1GeometrySink> sink;
+            if (FAILED(quad[q]->Open(&sink)) || !sink) return;
+            sink->BeginFigure(p[q * 4], D2D1_FIGURE_BEGIN_FILLED);
+            sink->AddLine(p[q * 4 + 1]);
+            sink->AddLine(p[q * 4 + 2]);
+            sink->AddLine(p[q * 4 + 3]);
+            sink->EndFigure(D2D1_FIGURE_END_CLOSED);
+            if (FAILED(sink->Close())) return;
+        }
+
+        D2D1_MATRIX_3X2_F oldTransform;
+        target_->GetTransform(&oldTransform);
+
+        // Everything is drawn opaque inside a layer that carries the icon opacity,
+        // so the overlap between fill, stroke and the two halves never double-blends.
+        ComPtr<ID2D1Layer> layer;
+        const bool layered = SUCCEEDED(target_->CreateLayer(nullptr, &layer)) && layer;
+        if (layered) {
+            target_->PushLayer(
+                D2D1::LayerParameters(D2D1::RectF(center.x - 18.0f, center.y - 18.0f,
+                                                  center.x + 18.0f, center.y + 18.0f),
+                                      nullptr, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+                                      D2D1::IdentityMatrix(), opacity, nullptr, D2D1_LAYER_OPTIONS_NONE),
+                layer.Get());
+        }
+        accentBrush_->SetOpacity(layered ? 1.0f : opacity);
+
+        const float sf = 1.0f - 0.13f * press;
+        target_->SetTransform(D2D1::Matrix3x2F::Translation(center.x, center.y) *
+                              D2D1::Matrix3x2F::Scale(sf, sf, center) * oldTransform);
+        for (int q = 0; q < 2; ++q) {
+            target_->FillGeometry(quad[q].Get(), accentBrush_.Get());
+            target_->DrawGeometry(quad[q].Get(), accentBrush_.Get(), kPlayPauseCorner * 2.0f,
+                                  roundJoinStyle_.Get());
+        }
+        target_->SetTransform(oldTransform);
+        if (layered) target_->PopLayer();
+        accentBrush_->SetOpacity(1.0f);
+    }
+
+    // ── Artist / album: gentle swap ──────────────────────────────────────────
+    // The old line drifts up and fades while the new one rises into place. Only
+    // runs when the line was already on screen; otherwise the text just appears.
+    void DrawSwapMarquee(SwapTextState& st, const std::wstring& text, D2D1_RECT_F rect,
+                         IDWriteTextFormat* format, ID2D1Brush* brush, double now, float speed,
+                         MarqueeLayoutCache& cache, float delay) {
+        constexpr float kDur = 0.38f;
+        const bool recentlyDrawn = st.lastDrawn >= 0.0 && (now - st.lastDrawn) < 0.25;
+        st.lastDrawn = now;
+
+        if (text != st.shown) {
+            if (recentlyDrawn && expandedAnim_) {
+                st.prev = st.shown;
+                st.start = now;
+            } else {
+                st.prev.clear();
+                st.start = -1.0;
+            }
+            st.shown = text;
+        } else if (st.start >= 0.0 && !recentlyDrawn) {
+            st.start = -1.0;
+        }
+
+        const float elapsed = st.start >= 0.0 ? static_cast<float>(now - st.start) : -1.0f;
+        if (elapsed < 0.0f || elapsed >= delay + kDur) {
+            st.start = -1.0;
+            DrawMarqueeText(text, rect, format, brush, now, speed, cache);
+            return;
+        }
+
+        const float u = Clamp((elapsed - delay) / kDur, 0.0f, 1.0f);
+        const float e = SkipEaseInOut(u);
+        const float base = brush->GetOpacity();
+        const float dy = 5.0f;
+        D2D1_RECT_F up = rect;
+        up.top -= dy * e;
+        up.bottom -= dy * e;
+        D2D1_RECT_F down = rect;
+        down.top += dy * (1.0f - e);
+        down.bottom += dy * (1.0f - e);
+
+        brush->SetOpacity(base * (1.0f - SkipSmooth(u * 1.4f)));
+        DrawMarqueeText(st.prev, up, format, brush, now, speed, st.prevCache);
+        brush->SetOpacity(base * SkipSmooth((u - 0.25f) / 0.75f));
+        DrawMarqueeText(text, down, format, brush, now, speed, cache);
+        brush->SetOpacity(base);
+        g_layoutDirty = true;
+    }
+
+    // ── Album art: flip ──────────────────────────────────────────────────────
+    // The decoder assigns a fresh generation on every poll during the post-change
+    // settle window even when the image is identical, so the flip is keyed on a
+    // hash of the pixels instead and only fires when the picture really changed.
+    uint64_t ArtContentHash(const MediaSnapshot& media) {
+        if (media.art.bgra.empty()) return 0;
+        if (artHashValue_ != 0 && artHashGen_ == media.art.generation) return artHashValue_;
+        uint64_t h = 1469598103934665603ull;
+        h = (h ^ static_cast<uint64_t>(media.art.width)) * 1099511628211ull;
+        h = (h ^ static_cast<uint64_t>(media.art.height)) * 1099511628211ull;
+        const std::vector<uint8_t>& v = media.art.bgra;
+        for (size_t i = 0; i < v.size(); i += 61) {
+            h = (h ^ v[i]) * 1099511628211ull;
+        }
+        if (h == 0) h = 1;
+        artHashGen_ = media.art.generation;
+        artHashValue_ = h;
+        return h;
+    }
+
+    void DrawArtFace(ID2D1Bitmap* bitmap, D2D1_RECT_F rect, float radius) {
+        ComPtr<ID2D1RoundedRectangleGeometry> mask;
+        HRESULT hrMask = d2dFactory_->CreateRoundedRectangleGeometry(D2D1::RoundedRect(rect, radius, radius), &mask);
+        ComPtr<ID2D1Layer> layer;
+        HRESULT hrLayer = target_->CreateLayer(nullptr, &layer);
+        const bool roundedClip = SUCCEEDED(hrMask) && SUCCEEDED(hrLayer) && mask && layer;
+        if (roundedClip) {
+            target_->PushLayer(D2D1::LayerParameters(rect, mask.Get()), layer.Get());
+        } else {
+            target_->PushAxisAlignedClip(rect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+        }
+        if (bitmap) {
+            target_->DrawBitmap(bitmap, rect, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+        } else {
+            accentBrush_->SetOpacity(0.24f);
+            target_->FillRoundedRectangle(D2D1::RoundedRect(rect, radius, radius), accentBrush_.Get());
+            accentBrush_->SetOpacity(1.0f);
+        }
+        if (roundedClip) {
+            target_->PopLayer();
+        } else {
+            target_->PopAxisAlignedClip();
+        }
+    }
+
+    void DrawAlbumArtFlip(const MediaSnapshot& media, D2D1_RECT_F rect, double now,
+                          float radius, bool drawBadge) {
+        constexpr double kFlipDuration = 0.62;
+        const bool recentlyDrawn = artFlipLastDrawn_ >= 0.0 && (now - artFlipLastDrawn_) < 0.25;
+        artFlipLastDrawn_ = now;
+
+        const uint64_t hash = ArtContentHash(media);
+        if (!artFlipInit_ || !recentlyDrawn) {
+            artFlipInit_ = true;
+            artFlipHash_ = hash;
+            artFlipStart_ = -1.0;
+            artFlipOld_.Reset();
+        } else if (hash != artFlipHash_) {
+            // Mid-flip changes just retarget the face shown after the turn.
+            if (expandedAnim_ && artFlipStart_ < 0.0 && hash != 0) {
+                artFlipOld_ = artBitmap_;  // still the previous cover: not rebuilt yet
+                artFlipStart_ = now;
+            }
+            artFlipHash_ = hash;
+        }
+
+        float p = -1.0f;
+        if (artFlipStart_ >= 0.0) {
+            p = static_cast<float>((now - artFlipStart_) / kFlipDuration);
+            if (p >= 1.0f) {
+                artFlipStart_ = -1.0;
+                artFlipOld_.Reset();
+                p = -1.0f;
+            }
+        }
+        if (p < 0.0f) {
+            DrawAlbumArt(media, rect, now, radius, drawBadge);
+            return;
+        }
+
+        g_layoutDirty = true;
+        const float q = SkipEaseInOut(p);
+        const float c = std::fabs(std::cos(3.14159265f * q));  // 1 = facing us, 0 = edge-on
+        if (c < 0.02f) return;
+
+        const D2D1_POINT_2F center = D2D1::Point2F((rect.left + rect.right) * 0.5f,
+                                                   (rect.top + rect.bottom) * 0.5f);
+        D2D1_MATRIX_3X2_F oldTransform;
+        target_->GetTransform(&oldTransform);
+        target_->SetTransform(D2D1::Matrix3x2F::Scale(c, 1.0f - 0.05f * (1.0f - c), center) * oldTransform);
+
+        if (q < 0.5f) {
+            DrawArtFace(artFlipOld_.Get(), rect, radius);
+        } else {
+            DrawAlbumArt(media, rect, now, radius, drawBadge);
+        }
+
+        // Darken the face as it turns away, for a sense of depth.
+        ComPtr<ID2D1SolidColorBrush> shade;
+        if (SUCCEEDED(target_->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.35f * (1.0f - c)), &shade)) && shade) {
+            target_->FillRoundedRectangle(D2D1::RoundedRect(rect, radius, radius), shade.Get());
+        }
+        target_->SetTransform(oldTransform);
+    }
+
+    // ── Album art (collapsed pill): record drop ──────────────────────────────
+    // The collapsed cover is a round disc, so a track change plays as a record
+    // swap: the old disc spins up and is thrown away (shrinks, fades) while the
+    // new one drops in from above -- big, spinning fast, then springing down onto
+    // the pill and slowing to rest. Fast spins leave lagging ghost copies behind
+    // (motion blur). On landing an accent ring leaves the rim and a glint sweeps
+    // across the disc. Skipping backwards spins the other way.
+    // Same cover, new track (an album playing through): the disc just gives a
+    // short press-and-rebound with the ring and glint, no spin.
+
+    // The art bitmap is rebuilt lazily, only when the decoder hands out a new
+    // generation. Shared by the plain draw and the drop animation.
+    void EnsureArtBitmap(const MediaSnapshot& media) {
+        if (media.art.bgra.empty()) return;
+        if (artGeneration_ != media.art.generation || !artBitmap_) {
+            D2D1_BITMAP_PROPERTIES props = D2D1::BitmapProperties(
+                D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED));
+            target_->CreateBitmap(D2D1::SizeU(media.art.width, media.art.height),
+                                  media.art.bgra.data(), media.art.width * 4,
+                                  &props, &artBitmap_);
+            artGeneration_ = media.art.generation;
+        }
+    }
+
+    // One disc: scaled about its centre, the picture spun inside a fixed round
+    // mask. `lag` is how far the angle moved over the last few ms; it drives the
+    // ghost copies drawn on top of the disc.
+    void DrawArtDisc(ID2D1Bitmap* bitmap, D2D1_RECT_F rect, float radius,
+                     float scale, float angle, float lag, float alpha) {
+        if (alpha <= 0.004f || scale <= 0.02f) return;
+        const D2D1_POINT_2F c = D2D1::Point2F((rect.left + rect.right) * 0.5f,
+                                              (rect.top + rect.bottom) * 0.5f);
+        D2D1_MATRIX_3X2_F base;
+        target_->GetTransform(&base);
+        const D2D1_MATRIX_3X2_F scaled = D2D1::Matrix3x2F::Scale(scale, scale, c) * base;
+        target_->SetTransform(scaled);
+
+        ComPtr<ID2D1RoundedRectangleGeometry> mask;
+        ComPtr<ID2D1Layer> layer;
+        const bool clipped =
+            SUCCEEDED(d2dFactory_->CreateRoundedRectangleGeometry(
+                D2D1::RoundedRect(rect, radius, radius), &mask)) &&
+            SUCCEEDED(target_->CreateLayer(nullptr, &layer)) && mask && layer;
+        if (clipped) {
+            target_->PushLayer(D2D1::LayerParameters(rect, mask.Get(), D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+                                                     D2D1::IdentityMatrix(), Clamp(alpha, 0.0f, 1.0f)),
+                               layer.Get());
+        } else {
+            target_->PushAxisAlignedClip(rect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+        }
+
+        const float speed = std::min(std::fabs(lag) / 16.0f, 1.0f);
+        const int ghosts = (bitmap && speed > 0.05f) ? 3 : 0;
+        for (int k = 0; k <= ghosts; ++k) {
+            const float a = (k == 0) ? 1.0f : 0.30f * speed * (1.0f - 0.30f * static_cast<float>(k - 1));
+            target_->SetTransform(
+                D2D1::Matrix3x2F::Rotation(angle - lag * static_cast<float>(k), c) * scaled);
+            if (bitmap) {
+                target_->DrawBitmap(bitmap, rect, a, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+            } else {
+                accentBrush_->SetOpacity(0.24f);
+                target_->FillRoundedRectangle(D2D1::RoundedRect(rect, radius, radius), accentBrush_.Get());
+                accentBrush_->SetOpacity(1.0f);
+            }
+        }
+
+        if (clipped) {
+            target_->PopLayer();
+        } else {
+            target_->PopAxisAlignedClip();
+        }
+        target_->SetTransform(base);
+    }
+
+    // Accent ring leaving the rim + a soft glint sweeping across the disc.
+    // ringP / sheenP: <0 or >1 = not running, otherwise progress 0..1.
+    void DrawArtLandingFx(D2D1_RECT_F rect, float radius, float ringP, float sheenP, float dir) {
+        const D2D1_POINT_2F c = D2D1::Point2F((rect.left + rect.right) * 0.5f,
+                                              (rect.top + rect.bottom) * 0.5f);
+        const float r0 = std::min(rect.right - rect.left, rect.bottom - rect.top) * 0.5f;
+
+        if (sheenP > 0.0f && sheenP < 1.0f) {
+            const float e = SkipEaseInOut(sheenP);
+            const float pos = (e * 2.0f - 1.0f) * 1.3f * r0;
+            const float half = 0.55f * r0;
+            const float dx = 0.82f * dir, dy = -0.57f;
+            const float peak = 0.34f * std::sin(3.14159265f * sheenP);
+            D2D1_GRADIENT_STOP stops[3] = {
+                {0.0f, D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.0f)},
+                {0.5f, D2D1::ColorF(1.0f, 1.0f, 1.0f, peak)},
+                {1.0f, D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.0f)},
+            };
+            ComPtr<ID2D1GradientStopCollection> coll;
+            ComPtr<ID2D1LinearGradientBrush> glint;
+            if (SUCCEEDED(target_->CreateGradientStopCollection(stops, 3, &coll)) && coll &&
+                SUCCEEDED(target_->CreateLinearGradientBrush(
+                    D2D1::LinearGradientBrushProperties(
+                        D2D1::Point2F(c.x + dx * (pos - half), c.y + dy * (pos - half)),
+                        D2D1::Point2F(c.x + dx * (pos + half), c.y + dy * (pos + half))),
+                    coll.Get(), &glint)) && glint) {
+                target_->FillRoundedRectangle(D2D1::RoundedRect(rect, radius, radius), glint.Get());
+            }
+        }
+
+        for (int i = 0; i < 2; ++i) {
+            const float p = (ringP - 0.16f * static_cast<float>(i)) / (1.0f - 0.16f * static_cast<float>(i));
+            if (p <= 0.0f || p >= 1.0f) continue;
+            const float e = 1.0f - (1.0f - p) * (1.0f - p) * (1.0f - p);
+            const float a = (i == 0 ? 0.60f : 0.28f) * (1.0f - p) * (1.0f - p);
+            const float rr = r0 + 0.8f + 4.2f * e;
+            accentBrush_->SetOpacity(a);
+            target_->DrawEllipse(D2D1::Ellipse(c, rr, rr), accentBrush_.Get(), 0.6f + 1.4f * (1.0f - p));
+        }
+        accentBrush_->SetOpacity(1.0f);
+    }
+
+    void DrawAlbumArtDrop(const MediaSnapshot& media, D2D1_RECT_F rect, double now, float radius) {
+        constexpr double kFullDur = 0.95;
+        constexpr double kPulseDur = 0.55;
+        constexpr double kTitleWait = 0.9;  // how long to wait for a new cover after a title change
+        const bool recentlyDrawn = pillArtLastDrawn_ >= 0.0 && (now - pillArtLastDrawn_) < 0.25;
+        pillArtLastDrawn_ = now;
+
+        const uint64_t hash = ArtContentHash(media);
+        if (!pillArtInit_ || !recentlyDrawn || !pillCoverAnim_) {
+            // First frame, the pill was off screen, or the animation is turned off: snap.
+            pillArtInit_ = true;
+            pillArtHash_ = hash;
+            pillTitle_ = media.title;
+            pillArtStart_ = -1.0;
+            pillTitlePendingAt_ = -1.0;
+            pillArtOld_.Reset();
+            pillArtLast_.Reset();
+        } else {
+            float dir = 1.0f;
+            if (lastSkipClickAt_ >= 0.0 && (now - lastSkipClickAt_) < 6.0) dir = lastSkipDir_;
+
+            if (hash != pillArtHash_) {
+                // The picture really changed (the decoder re-issues generations
+                // for identical covers, hence the hash).
+                if (pillArtStart_ < 0.0 && hash != 0) {
+                    pillArtOld_ = pillArtLast_;  // what was on screen last frame; may be empty
+                    pillArtStart_ = now;
+                    pillArtPulse_ = false;
+                    pillArtDir_ = dir;
+                    pillArtFullAt_ = now;
+                    pillTitlePendingAt_ = -1.0;
+                }
+                pillArtHash_ = hash;
+            }
+
+            if (media.title != pillTitle_) {
+                const bool hadTitle = !pillTitle_.empty();
+                pillTitle_ = media.title;
+                // Only arm the pulse if no drop is running or just finished; the
+                // metadata often arrives before the new cover does.
+                if (hadTitle && !media.title.empty() && pillArtStart_ < 0.0 &&
+                    (now - pillArtFullAt_) > 1.6) {
+                    pillTitlePendingAt_ = now;
+                }
+            }
+            if (pillTitlePendingAt_ >= 0.0) {
+                if (pillArtStart_ >= 0.0) {
+                    pillTitlePendingAt_ = -1.0;
+                } else if (now - pillTitlePendingAt_ >= kTitleWait) {
+                    // No new cover showed up: same album, so do the gentle pulse.
+                    pillTitlePendingAt_ = -1.0;
+                    pillArtOld_.Reset();
+                    pillArtStart_ = now;
+                    pillArtPulse_ = true;
+                    pillArtDir_ = dir;
+                } else {
+                    g_layoutDirty = true;  // keep frames coming while we wait
+                }
+            }
+        }
+
+        EnsureArtBitmap(media);
+        ID2D1Bitmap* fresh = media.art.bgra.empty() ? nullptr : artBitmap_.Get();
+
+        float p = -1.0f;
+        if (pillArtStart_ >= 0.0) {
+            p = static_cast<float>((now - pillArtStart_) / (pillArtPulse_ ? kPulseDur : kFullDur));
+            if (p >= 1.0f) {
+                pillArtStart_ = -1.0;
+                pillArtOld_.Reset();
+                p = -1.0f;
+            }
+        }
+
+        if (p < 0.0f) {
+            DrawAlbumArt(media, rect, now, radius, false);
+        } else {
+            g_layoutDirty = true;
+            const float dir = pillArtDir_;
+
+            if (!pillArtPulse_) {
+                // Old disc: spins up and is thrown away behind the new one.
+                if (pillArtOld_) {
+                    const float u = Clamp(p / 0.40f, 0.0f, 1.0f);
+                    if (u < 1.0f) {
+                        const float up = std::max(u - 0.058f, 0.0f);
+                        const float k = u * u * u, kp = up * up * up;
+                        DrawArtDisc(pillArtOld_.Get(), rect, radius,
+                                    1.0f - 0.26f * k,
+                                    dir * 150.0f * k,
+                                    dir * 150.0f * (k - kp),
+                                    1.0f - SkipSmooth(u / 0.9f));
+                    }
+                }
+                // New disc: drops in big and fast-spinning, springs down, slows to rest.
+                if (p > 0.14f) {
+                    const float u = Clamp((p - 0.14f) / 0.86f, 0.0f, 1.0f);
+                    const float up = std::max(u - 0.027f, 0.0f);
+                    const float settle = 1.0f - SkipSmooth((u - 0.8f) / 0.2f);
+                    const float scale = 1.0f + 0.30f * std::exp(-5.2f * u) * std::cos(7.5f * u) * settle;
+                    const float angle = -dir * 220.0f * std::pow(1.0f - u, 3.0f);
+                    const float anglePrev = -dir * 220.0f * std::pow(1.0f - up, 3.0f);
+                    DrawArtDisc(fresh, rect, radius, scale, angle, angle - anglePrev,
+                                SkipSmooth(u / 0.28f));
+                }
+                DrawArtLandingFx(rect, radius, (p - 0.32f) / 0.60f, (p - 0.34f) / 0.46f, dir);
+            } else {
+                // Same cover: press-and-rebound in place.
+                auto wob = [](float x) { return std::exp(-5.5f * x) * std::sin(11.0f * x); };
+                const float w = wob(p);
+                const float wp = wob(std::max(p - 0.04f, 0.0f));
+                DrawArtDisc(fresh, rect, radius, 1.0f - 0.20f * w, dir * 18.0f * w,
+                            dir * 18.0f * (w - wp), 1.0f);
+                DrawArtLandingFx(rect, radius, (p - 0.08f) / 0.62f, (p - 0.12f) / 0.55f, dir);
+            }
+        }
+
+        if (fresh) {
+            pillArtLast_ = artBitmap_;
+        } else {
+            pillArtLast_.Reset();
+        }
+    }
+
     void DrawMarqueeText(const std::wstring& text, D2D1_RECT_F rect, IDWriteTextFormat* format,
                          ID2D1Brush* brush, double now, float speed, MarqueeLayoutCache& cache) {
         if (!format || !brush || text.empty()) {
@@ -10143,6 +11719,330 @@ class Renderer {
         target_->PopAxisAlignedClip();
     }
 
+    // ── Audio spectrum styles ────────────────────────────────────────────────
+    // DrawSpectrum is the single entry point used by the collapsed pill and the
+    // expanded player. It owns the track-change detection (same "snap if it was
+    // off screen, never animate a stale change" rule as the cover drop) and
+    // hands the animation clock to the selected style via specT_/specDir_.
+    //
+    // Per-style track-change animations (all ~1 s, all direction-aware so a
+    // "previous" click mirrors what "next" does, like the cover drop):
+    //   Bars   - domino: bars collapse to dots in a ripple, then spring back up
+    //   Orb    - implode, detonate: shockwave ring + spokes spring out spinning
+    //   Plasma - thread goes flat, a bright wave front re-ignites it end to end
+    //   Led    - scanline reboot: peaks rain down, a glowing scan column sweeps
+    float SpecBandRange(const SharedState& state, float from, float to) const {
+        // Average of the analyzer bands covering [from, to) in 0..kSpectrumBands.
+        int a = std::clamp(static_cast<int>(std::floor(from)), 0, kSpectrumBands - 1);
+        int b = std::clamp(static_cast<int>(std::ceil(to)), a + 1, kSpectrumBands);
+        float sum = 0.0f;
+        for (int i = a; i < b; ++i) sum += state.bands[static_cast<size_t>(i)];
+        return sum / static_cast<float>(b - a);
+    }
+
+    void DrawSpectrum(const SharedState& state, D2D1_RECT_F rect, const Settings& settings, double now) {
+        constexpr double kSpecDur = 1.15;
+        const bool recentlyDrawn = specLastDrawn_ >= 0.0 && (now - specLastDrawn_) < 0.25;
+        float dt = recentlyDrawn ? static_cast<float>(now - specLastDrawn_) : 0.016f;
+        dt = Clamp(dt, 0.001f, 0.05f);
+        specLastDrawn_ = now;
+
+        const size_t key = std::hash<std::wstring>{}(state.media.title) * 31u +
+                           std::hash<std::wstring>{}(state.media.artist);
+        if (!specInit_ || !recentlyDrawn) {
+            specInit_ = true;
+            specKey_ = key;
+            specStart_ = -1.0;
+            if (!recentlyDrawn) {
+                std::fill(std::begin(specPeak_), std::end(specPeak_), 0.0f);
+                std::fill(std::begin(specPeakVel_), std::end(specPeakVel_), 0.0f);
+                specBassSlow_ = 0.0f;
+                specKick_ = 0.0f;
+            }
+        } else if (key != specKey_ && !state.media.title.empty()) {
+            const bool running = specStart_ >= 0.0 && (now - specStart_) < 0.35;
+            specKey_ = key;
+            // Title and artist often land a few frames apart: absorb the second one.
+            if (!running) {
+                specStart_ = now;
+                specDir_ = 1.0f;
+                if (lastSkipClickAt_ >= 0.0 && (now - lastSkipClickAt_) < 6.0) specDir_ = lastSkipDir_;
+                // Led: the old peaks rain down as the scanline reboots the matrix.
+                for (float& v : specPeakVel_) v = 0.0f;
+                for (int i = 0; i < kSpectrumBands; ++i) specPeak_[i] *= 0.6f;
+            }
+        }
+
+        specT_ = -1.0f;
+        if (specStart_ >= 0.0) {
+            const float t = static_cast<float>((now - specStart_) / kSpecDur);
+            if (t >= 1.0f) {
+                specStart_ = -1.0;
+            } else {
+                specT_ = t;
+                g_layoutDirty = true;
+            }
+        }
+
+        // Low-end energy drives the orb's pulse and a beat "kick" envelope.
+        const float bass = SpecBandRange(state, 0.0f, 4.0f);
+        specBassSlow_ += (bass - specBassSlow_) * (1.0f - std::exp(-dt / 0.45f));
+        const float beat = std::max(0.0f, bass - specBassSlow_ - 0.04f);
+        specKick_ = std::max(specKick_ * std::exp(-dt / 0.18f), Clamp(beat * 3.2f, 0.0f, 1.0f));
+        specBass_ += (bass - specBass_) * (1.0f - std::exp(-dt / 0.07f));
+        specPhase_ += dt * (1.6f + 5.0f * specBass_ + 8.0f * specKick_);
+
+        switch (settings.spectrumStyle) {
+            case SpectrumStyle::Orb:    DrawSpectrumOrb(state, rect); break;
+            case SpectrumStyle::Plasma: DrawSpectrumPlasma(state, rect); break;
+            case SpectrumStyle::Led:    DrawSpectrumLed(state, rect, dt); break;
+            default:                    DrawWaveform(state, rect); break;
+        }
+    }
+
+    // ── Pulse Orb ────────────────────────────────────────────────────────────
+    // A glowing core ringed by spokes (bass at the bottom, mirrored left/right).
+    // The core pulses on the beat; the whole orb only spins on a track change.
+    void DrawSpectrumOrb(const SharedState& state, D2D1_RECT_F rect) {
+        const float w = rect.right - rect.left, h = rect.bottom - rect.top;
+        const D2D1_POINT_2F c = D2D1::Point2F((rect.left + rect.right) * 0.5f, (rect.top + rect.bottom) * 0.5f);
+        const float R = std::min(w, h) * 0.5f + 1.0f;  // outer reach
+        const float r0 = R * 0.40f;  // core radius at rest
+        // Fewer, thinner spokes on a small orb so they never merge into a solid disc.
+        const int kSpokes = R < 14.0f ? 16 : 24;
+        const int half = kSpokes / 2;
+        constexpr float kTwoPi = 6.28318531f;
+
+        const float t = specT_;
+        // Spokes are fixed (bass at the bottom, mirrored left/right) so the shape always
+        // reads as a spectrum; only the track-change detonation spins the orb.
+        float lenScale = 1.0f, coreScale = 1.0f, ringShrink = 0.0f, spin = 0.0f;
+        float burstAlpha = 0.0f, burstR = 0.0f;
+        if (t >= 0.0f) {
+            if (t < 0.28f) {
+                const float u = SkipSmooth(t / 0.28f);
+                lenScale = 1.0f - u;
+                coreScale = 1.0f - 0.35f * u;
+                ringShrink = 0.30f * u;
+            } else {
+                const float u = Clamp((t - 0.28f) / 0.72f, 0.0f, 1.0f);
+                const float spring = 1.0f - std::exp(-6.0f * u) * std::cos(10.0f * u);
+                lenScale = spring;
+                coreScale = 1.0f + 0.55f * std::exp(-7.0f * u) * std::cos(6.0f * u);
+                ringShrink = 0.30f * std::exp(-9.0f * u);
+                spin += specDir_ * 4.2f * std::pow(1.0f - u, 3.0f);
+                burstR = r0 + (R + 3.0f - r0) * SkipEaseInOut(u / 0.8f);
+                burstAlpha = 0.75f * (1.0f - Clamp(u / 0.85f, 0.0f, 1.0f)) * (1.0f - Clamp(u / 0.85f, 0.0f, 1.0f));
+            }
+        }
+
+        const float baseR = r0 * (1.0f - ringShrink);
+        const float bassPulse = 0.18f * specBass_ + 0.22f * specKick_;
+
+        EnsureRoundJoinStyle();
+        const float strokeW = Clamp(kTwoPi * (baseR + 1.0f) / static_cast<float>(kSpokes) * 0.62f, 1.0f, R * 0.16f);
+
+        // Thin shell ring just inside the spokes: breathes with the bass (no filled background).
+        accentBrush_->SetOpacity(0.25f + 0.35f * specBass_ + 0.25f * specKick_);
+        const float shellR = baseR * (0.90f + 0.18f * bassPulse);
+        target_->DrawEllipse(D2D1::Ellipse(c, shellR, shellR), accentBrush_.Get(), 0.8f);
+
+        for (int k = 0; k < kSpokes; ++k) {
+            const int m = k < half ? k : kSpokes - 1 - k;  // mirrored 0..half-1
+            const float lo = static_cast<float>(m) * kSpectrumBands / half;
+            float v = SpecBandRange(state, lo, lo + static_cast<float>(kSpectrumBands) / half);
+            v = Clamp(v * 1.1f, 0.04f, 1.0f);
+            // Each spoke trails the detonation slightly so the burst reads as a wave.
+            float ls = lenScale;
+            if (t >= 0.28f) {
+                const float u = Clamp((t - 0.28f - 0.012f * m) / 0.72f, 0.0f, 1.0f);
+                ls = 1.0f - std::exp(-6.0f * u) * std::cos(10.0f * u);
+            }
+            const float len = (R - baseR - 1.5f) * (0.10f + 0.90f * v) * Clamp(ls, 0.0f, 1.45f);
+            // k = 0 and k = kSpokes-1 sit either side of the bottom (bass), highs meet at the top.
+            const float a = spin + 1.5707963f + kTwoPi * (static_cast<float>(k) + 0.5f) / kSpokes;
+            const float ca = std::cos(a), sa = std::sin(a);
+            const float l = std::max(len, 0.6f);
+            const D2D1_POINT_2F p0 = D2D1::Point2F(c.x + ca * (baseR + 1.0f), c.y + sa * (baseR + 1.0f));
+            const D2D1_POINT_2F p1 = D2D1::Point2F(c.x + ca * (baseR + 1.0f + l), c.y + sa * (baseR + 1.0f + l));
+            // Soft glow underlay, then the spoke itself.
+            accentBrush_->SetOpacity(0.10f + 0.14f * v);
+            target_->DrawLine(p0, p1, accentBrush_.Get(), strokeW * 2.0f, roundJoinStyle_.Get());
+            accentBrush_->SetOpacity(0.45f + 0.55f * v);
+            target_->DrawLine(p0, p1, accentBrush_.Get(), strokeW, roundJoinStyle_.Get());
+        }
+
+        // Core.
+        accentBrush_->SetOpacity(0.95f);
+        const float coreR = std::max(0.8f, baseR * 0.58f * coreScale * (1.0f + bassPulse));
+        target_->FillEllipse(D2D1::Ellipse(c, coreR, coreR), accentBrush_.Get());
+        ComPtr<ID2D1SolidColorBrush> hot;
+        if (SUCCEEDED(target_->CreateSolidColorBrush(MixColor(material_.accent, D2D1::ColorF(1, 1, 1, 1), 0.65f), &hot)) && hot) {
+            hot->SetOpacity(0.55f + 0.35f * specKick_);
+            target_->FillEllipse(D2D1::Ellipse(c, coreR * 0.45f, coreR * 0.45f), hot.Get());
+        }
+
+        if (burstAlpha > 0.01f) {
+            accentBrush_->SetOpacity(burstAlpha);
+            target_->DrawEllipse(D2D1::Ellipse(c, burstR, burstR), accentBrush_.Get(), 0.8f + 1.4f * burstAlpha);
+        }
+        accentBrush_->SetOpacity(1.0f);
+    }
+
+    // ── Plasma Thread ────────────────────────────────────────────────────────
+    // Two intertwined glowing strands. Their local amplitude follows the
+    // spectrum from low (left) to high (right); the phase flows with the music.
+    void DrawSpectrumPlasma(const SharedState& state, D2D1_RECT_F rect) {
+        constexpr int kPts = 34;
+        const float w = rect.right - rect.left, h = rect.bottom - rect.top;
+        const float cy = (rect.top + rect.bottom) * 0.5f;
+        const float maxA = h * 0.46f;
+        const float t = specT_;
+        const float dir = specDir_;
+
+        EnsureRoundJoinStyle();
+        ComPtr<ID2D1SolidColorBrush> hot;
+        target_->CreateSolidColorBrush(MixColor(material_.accent, D2D1::ColorF(1, 1, 1, 1), 0.6f), &hot);
+
+        // Front position (normalised, already mirrored for "previous").
+        const float front = t < 0.15f ? -0.4f : -0.4f + 1.9f * SkipEaseInOut((t - 0.15f) / 0.78f);
+
+        for (int strand = 0; strand < 2; ++strand) {
+            D2D1_POINT_2F pts[kPts];
+            for (int i = 0; i < kPts; ++i) {
+                const float xn = static_cast<float>(i) / (kPts - 1);
+                const float xd = dir >= 0.0f ? xn : 1.0f - xn;  // distance along the sweep
+                // max(): sin(pi) is slightly negative in float and pow(neg, 0.7) is NaN.
+                float env = std::pow(std::max(0.0f, std::sin(3.14159265f * xn)), 0.7f);  // pinned at both ends
+                float band = SpecBandRange(state, xn * (kSpectrumBands - 1), xn * (kSpectrumBands - 1) + 1.5f);
+                band = Clamp(0.10f + 0.95f * band + 0.25f * specKick_, 0.0f, 1.25f);
+
+                float ignite = 1.0f, boost = 0.0f;
+                if (t >= 0.0f) {
+                    if (t < 0.15f) {
+                        ignite = 1.0f - SkipSmooth(t / 0.15f);
+                    } else {
+                        ignite = SkipSmooth((front - xd) / 0.22f + 0.15f);
+                        const float g = (xd - front) / 0.16f;
+                        boost = 0.95f * std::exp(-g * g);
+                    }
+                }
+                const float ph = specPhase_ + (strand ? 3.14159265f : 0.0f);
+                const float wave = std::sin(xn * (7.0f + 4.0f * band) - ph) * 0.65f +
+                                   std::sin(xn * 13.0f + ph * 0.6f) * 0.35f;
+                const float A = maxA * env * (band * ignite + boost * env);
+                pts[i] = D2D1::Point2F(rect.left + xn * w, cy + wave * A * (strand ? -1.0f : 1.0f));
+            }
+            ComPtr<ID2D1PathGeometry> path;
+            if (FAILED(d2dFactory_->CreatePathGeometry(&path)) || !path) continue;
+            ComPtr<ID2D1GeometrySink> sink;
+            if (FAILED(path->Open(&sink)) || !sink) continue;
+            sink->BeginFigure(pts[0], D2D1_FIGURE_BEGIN_HOLLOW);
+            sink->AddLines(pts + 1, kPts - 1);
+            sink->EndFigure(D2D1_FIGURE_END_OPEN);
+            if (FAILED(sink->Close())) continue;
+
+            // Glow underlay, body, hot core.
+            accentBrush_->SetOpacity(strand ? 0.16f : 0.22f);
+            target_->DrawGeometry(path.Get(), accentBrush_.Get(), 4.2f, roundJoinStyle_.Get());
+            accentBrush_->SetOpacity(strand ? 0.62f : 0.95f);
+            target_->DrawGeometry(path.Get(), accentBrush_.Get(), strand ? 1.1f : 1.6f, roundJoinStyle_.Get());
+            if (hot && !strand) {
+                hot->SetOpacity(0.35f + 0.4f * specKick_);
+                target_->DrawGeometry(path.Get(), hot.Get(), 0.6f, roundJoinStyle_.Get());
+            }
+        }
+
+        // Spark riding the wave front during the re-ignite.
+        if (t >= 0.15f && hot) {
+            const float xd = Clamp(front, 0.0f, 1.0f);
+            const float xn = dir >= 0.0f ? xd : 1.0f - xd;
+            const float a = 1.0f - Clamp((t - 0.80f) / 0.2f, 0.0f, 1.0f);
+            if (front > -0.1f && front < 1.15f) {
+                hot->SetOpacity(0.85f * a);
+                target_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(rect.left + xn * w, cy), 2.2f, 2.2f), hot.Get());
+                accentBrush_->SetOpacity(0.28f * a);
+                target_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(rect.left + xn * w, cy), 5.5f, 5.5f), accentBrush_.Get());
+            }
+        }
+        accentBrush_->SetOpacity(1.0f);
+    }
+
+    // ── Peak Matrix ──────────────────────────────────────────────────────────
+    // Stacked LED cells per column with gravity-driven falling peak caps.
+    void DrawSpectrumLed(const SharedState& state, D2D1_RECT_F rect, float dt) {
+        const float w = rect.right - rect.left, h = rect.bottom - rect.top;
+        const float colGap = 1.8f, colW = 2.6f;
+        const int cols = std::clamp(static_cast<int>((w + colGap) / (colW + colGap)), 3, 14);
+        const float cw = (w - colGap * (cols - 1)) / cols;
+        const int rows = std::clamp(static_cast<int>(h / 3.6f), 4, 8);
+        const float cellGap = 1.0f;
+        const float ch = (h - cellGap * (rows - 1)) / rows;
+        const float t = specT_;
+        const float dir = specDir_;
+
+        ComPtr<ID2D1SolidColorBrush> hot;
+        target_->CreateSolidColorBrush(MixColor(material_.accent, D2D1::ColorF(1, 1, 1, 1), 0.7f), &hot);
+
+        // Scan position in column units, mirrored for "previous".
+        const float travel = static_cast<float>(cols) + 4.0f;
+        const float scan = t < 0.0f ? -10.0f : -1.5f + travel * SkipEaseInOut(t / 0.82f);
+
+        for (int c = 0; c < cols; ++c) {
+            const int slot = dir >= 0.0f ? c : cols - 1 - c;  // order the scan reaches this column
+            // Same source as Classic Bars: each column reads the level history, newest on the
+            // right, so every column rises and falls with the music (no frequency tilt).
+            const size_t wfSize = state.waveform.size();
+            const size_t wfOffset = static_cast<size_t>(cols - c) * 3;
+            const size_t wfSrc = (state.waveformWrite + wfSize * 2 - wfOffset) % wfSize;
+            float v = Clamp(state.waveform[wfSrc], 0.03f, 1.0f);
+
+            // Falling peak cap with gravity; a hit snaps it up.
+            float& pk = specPeak_[c];
+            float& pv = specPeakVel_[c];
+            if (v >= pk) { pk = v; pv = 0.0f; }
+            else { pv += 2.4f * dt; pk = std::max(v, pk - pv * dt); }
+
+            float colAlpha = 1.0f, flash = 0.0f;
+            if (t >= 0.0f) {
+                const float d = scan - static_cast<float>(slot);  // >0: scanline already passed
+                if (d < 0.0f) {
+                    colAlpha = 0.35f;  // old song, about to be wiped
+                } else {
+                    flash = Clamp(1.0f - d / 3.2f, 0.0f, 1.0f);  // glowing tail behind the scanline
+                    colAlpha = 0.35f + 0.65f * SkipSmooth(d / 1.2f);
+                    if (d < 1.6f) { pk = std::min(pk, 0.0f + v); }      // peaks reset as the line passes
+                }
+            }
+
+            const float x = rect.left + c * (cw + colGap);
+            const int lit = static_cast<int>(std::round(v * rows));
+            const int cap = std::clamp(static_cast<int>(std::round(pk * rows)) - 1, 0, rows - 1);
+            for (int r = 0; r < rows; ++r) {
+                const float yb = rect.bottom - r * (ch + cellGap);
+                D2D1_RECT_F cell = D2D1::RectF(x, yb - ch, x + cw, yb);
+                const float rr = std::min(cw, ch) * 0.35f;
+                const float topness = rows > 1 ? static_cast<float>(r) / (rows - 1) : 0.0f;
+                if (flash > 0.0f) {
+                    // Whole column ignites, fading from the bottom up as the tail dies.
+                    ID2D1SolidColorBrush* b = (hot && flash > 0.7f && r >= rows / 2) ? hot.Get() : accentBrush_.Get();
+                    b->SetOpacity(Clamp(0.25f + 0.75f * flash, 0.0f, 1.0f) * (0.6f + 0.4f * (1.0f - topness)));
+                    target_->FillRoundedRectangle(D2D1::RoundedRect(cell, rr, rr), b);
+                } else if (r < lit) {
+                    accentBrush_->SetOpacity((0.50f + 0.45f * topness) * colAlpha);
+                    target_->FillRoundedRectangle(D2D1::RoundedRect(cell, rr, rr), accentBrush_.Get());
+                } else if (r == cap && cap >= lit && pk > 0.05f && hot) {
+                    hot->SetOpacity(0.9f * colAlpha);
+                    target_->FillRoundedRectangle(D2D1::RoundedRect(cell, rr, rr), hot.Get());
+                } else {
+                    accentBrush_->SetOpacity(0.09f * colAlpha);
+                    target_->FillRoundedRectangle(D2D1::RoundedRect(cell, rr, rr), accentBrush_.Get());
+                }
+            }
+        }
+        accentBrush_->SetOpacity(1.0f);
+    }
+
     void DrawWaveform(const SharedState& state, D2D1_RECT_F rect) {
         const float gap = 2.5f;
         const float minBarWidth = 2.0f;
@@ -10157,15 +12057,37 @@ class Renderer {
         // Use a step size of 4 samples (approx 40ms) so bars aren't identical
         const size_t step = 4;
 
+        const float t = specT_;
         for (size_t i = 0; i < count; ++i) {
             const size_t offset = (count - i) * step;
             const size_t source = (state.waveformWrite + state.waveform.size() - offset) %
                                   state.waveform.size();
             const float amp = Clamp(state.waveform[source], 0.03f, 1.0f);
-            const float h = std::max(3.0f, amp * maxH);
+            float h = std::max(3.0f, amp * maxH);
+            float glow = 0.0f;
+
+            // Track change: domino ripple. Each bar collapses to a dot, then springs
+            // back up with overshoot; the ripple runs with the skip direction.
+            if (t >= 0.0f && count > 1) {
+                float f = static_cast<float>(i) / static_cast<float>(count - 1);
+                if (specDir_ < 0.0f) f = 1.0f - f;
+                const float u = (t - 0.34f * f) / 0.66f;
+                float scale = 1.0f;
+                if (u < 0.0f) {
+                    scale = 1.0f;
+                } else if (u < 0.22f) {
+                    scale = 1.0f - SkipSmooth(u / 0.22f);
+                } else {
+                    const float v = Clamp((u - 0.22f) / 0.78f, 0.0f, 1.0f);
+                    scale = 1.0f - std::exp(-5.5f * v) * std::cos(9.5f * v);
+                    glow = std::exp(-6.0f * v);
+                }
+                h = std::max(2.0f, h * Clamp(scale, 0.0f, 1.5f));
+            }
+
             const float x = rect.left + i * (barWidth + gap);
             D2D1_RECT_F bar = D2D1::RectF(x, centerY - h * 0.5f, x + barWidth, centerY + h * 0.5f);
-            accentBrush_->SetOpacity(0.45f + 0.5f * amp);
+            accentBrush_->SetOpacity(Clamp(0.45f + 0.5f * amp + 0.35f * glow, 0.0f, 1.0f));
             target_->FillRoundedRectangle(D2D1::RoundedRect(bar, barWidth * 0.5f, barWidth * 0.5f),
                                          accentBrush_.Get());
         }
@@ -10331,9 +12253,11 @@ class Renderer {
         mutedBrush_->SetOpacity(0.50f);
     }
 
-    void DrawVolume(const SharedState& state, D2D1_RECT_F rect) {
+    // Shared by the Volume and Brightness banners: icon badge, label, value text
+    // and a level track. `drained` greys the track out (muted volume).
+    void DrawLevelBanner(D2D1_RECT_F rect, const wchar_t* glyph, const std::wstring& label,
+                         const wchar_t* value, float pct, bool drained) {
         if (rect.bottom - rect.top < 24.0f || rect.right - rect.left < 140.0f) return;
-        const bool muted = state.volume.muted || state.volume.percent == 0;
         const float cy = (rect.top + rect.bottom) * 0.5f;
         const float badgeSz = (rect.bottom - rect.top) - 16.0f;
         D2D1_RECT_F badge = D2D1::RectF(rect.left + 14, cy - badgeSz * 0.5f,
@@ -10344,7 +12268,6 @@ class Renderer {
         target_->CreateSolidColorBrush(material_.raisedStrong, &badgeBg);
         target_->FillRoundedRectangle(D2D1::RoundedRect(badge, br, br), badgeBg.Get());
 
-        const wchar_t* glyph = muted ? L"\uE74F" : (usingFluentIcons_ ? L"\uE767" : L"\uE993");
         textBrush_->SetOpacity(0.95f);
 
         if (iconFormat_) {
@@ -10361,27 +12284,18 @@ class Renderer {
         const float tx = badge.right + 14;
         D2D1_RECT_F labelRect = D2D1::RectF(tx, cy - 13.0f, rect.right - 58, cy + 3.0f);
         mutedBrush_->SetOpacity(0.50f);
-        const std::wstring deviceLabel =
-            state.volume.deviceName.empty() ? std::wstring(Loc(L"Volume")) : state.volume.deviceName;
-        target_->DrawTextW(deviceLabel.c_str(), static_cast<UINT32>(deviceLabel.size()),
+        target_->DrawTextW(label.c_str(), static_cast<UINT32>(label.size()),
                            smallTextFormat_.Get(), labelRect, mutedBrush_.Get(),
                            D2D1_DRAW_TEXT_OPTIONS_CLIP);
 
-        wchar_t value[32] = {};
-        if (muted) {
-            wcscpy_s(value, ARRAYSIZE(value), Loc(L"Muted"));
-        } else {
-            swprintf_s(value, L"%d%%", state.volume.percent);
-        }
         D2D1_RECT_F valueRect = D2D1::RectF(rect.right - 58, cy - 13.0f, rect.right - 14, cy + 3.0f);
         target_->DrawTextW(value, static_cast<UINT32>(wcslen(value)), smallTextFormat_.Get(),
                            valueRect, textBrush_.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
         textBrush_->SetOpacity(0.90f);
 
         D2D1_RECT_F track = D2D1::RectF(tx, cy + 7.0f, rect.right - 14, cy + 12.0f);
-        // Shared accent track, so the volume bar matches the media scrubber.
-        const float pct = Clamp(state.volume.displayPercent / 100.0f, 0.0f, 1.0f);
-        if (muted) {
+        // Shared accent track, so the bar matches the media scrubber.
+        if (drained) {
             // Muted still shows the level, just drained of colour.
             ComPtr<ID2D1SolidColorBrush> trackBrush;
             if (SUCCEEDED(target_->CreateSolidColorBrush(material_.raisedStrong, &trackBrush)) && trackBrush) {
@@ -10400,6 +12314,28 @@ class Renderer {
         }
         accentBrush_->SetOpacity(1.0f);
         mutedBrush_->SetOpacity(0.58f);
+    }
+
+    void DrawVolume(const SharedState& state, D2D1_RECT_F rect) {
+        const bool muted = state.volume.muted || state.volume.percent == 0;
+        const wchar_t* glyph = muted ? L"\uE74F" : (usingFluentIcons_ ? L"\uE767" : L"\uE993");
+        const std::wstring deviceLabel =
+            state.volume.deviceName.empty() ? std::wstring(Loc(L"Volume")) : state.volume.deviceName;
+        wchar_t value[32] = {};
+        if (muted) {
+            wcscpy_s(value, ARRAYSIZE(value), Loc(L"Muted"));
+        } else {
+            swprintf_s(value, L"%d%%", state.volume.percent);
+        }
+        DrawLevelBanner(rect, glyph, deviceLabel, value,
+                        Clamp(state.volume.displayPercent / 100.0f, 0.0f, 1.0f), muted);
+    }
+
+    void DrawBrightness(const SharedState& state, D2D1_RECT_F rect) {
+        wchar_t value[32] = {};
+        swprintf_s(value, L"%d%%", state.brightness.percent);
+        DrawLevelBanner(rect, L"\uE706", Loc(L"Brightness"), value,
+                        Clamp(state.brightness.percent / 100.0f, 0.0f, 1.0f), false);
     }
 
     void DrawTimer(const SharedState& state, D2D1_RECT_F rect) {
@@ -11000,6 +12936,67 @@ class Renderer {
     double       lastAccentTime_ = -1.0;  // -1 = not yet set (will snap on first frame)
     float        mediaBtnPress_[3] = {0.0f, 0.0f, 0.0f};
     double       lastMediaBtnTime_ = -1.0;
+    ComPtr<ID2D1PathGeometry> skipTriFull_;   // skip icons: rounded triangle, left edge at x=0
+    ComPtr<ID2D1PathGeometry> skipTriNotch_;  // same, with the front triangle's gap cut out
+    unsigned     skipSeenTrigger_[2] = {0, 0};
+    double       skipAnimStart_[2] = {-1.0, -1.0};
+    float        skipProgress_[2] = {-1.0f, -1.0f};  // index 0 = previous, 1 = next; <0 = idle, else 0..1
+    double       lastSkipClickAt_ = -1.0;
+    float        lastSkipDir_ = 1.0f;
+    float        playMorph_ = 0.0f;  // play/pause morph: 0 = pause bars, 1 = play triangle
+    float        playMorphFrom_ = 0.0f;
+    float        playMorphTarget_ = 0.0f;
+    double       playMorphStart_ = -1.0;
+    double       playMorphLastDrawn_ = -1.0;
+    bool         playMorphInit_ = false;
+    ComPtr<ID2D1StrokeStyle> roundJoinStyle_;
+    std::vector<TitleGlyph> titleOld_;  // title change: shared letters slide, the rest dissolve
+    std::vector<TitleGlyph> titleNew_;
+    std::wstring titleShown_;
+    bool         titleShownPlaceholder_ = false;
+    bool         titleAnimActive_ = false;
+    double       titleAnimStart_ = 0.0;
+    double       titleLastDrawn_ = -1.0;
+    float        titleAnimDur_ = 1.0f;
+    float        titleAvail_ = 0.0f;
+    TitleScroll  titleOldScroll_;
+    TitleScroll  titleNewScroll_;
+    SwapTextState swapArtist_;
+    SwapTextState swapAlbum_;
+    ComPtr<ID2D1Bitmap> artFlipOld_;  // album art flip
+    double       artFlipStart_ = -1.0;
+    double       artFlipLastDrawn_ = -1.0;
+    uint64_t     artFlipHash_ = 0;
+    uint64_t     artHashGen_ = 0;
+    uint64_t     artHashValue_ = 0;
+    bool         artFlipInit_ = false;
+    ComPtr<ID2D1Bitmap> pillArtOld_;    // pill cover change: outgoing disc during a drop
+    ComPtr<ID2D1Bitmap> pillArtLast_;   // bitmap drawn in the previous pill frame
+    double       pillArtStart_ = -1.0;  // -1 = idle
+    double       pillArtLastDrawn_ = -1.0;
+    double       pillArtFullAt_ = -1.0; // when the last full drop started
+    double       pillTitlePendingAt_ = -1.0;
+    uint64_t     pillArtHash_ = 0;
+    std::wstring pillTitle_;
+    float        pillArtDir_ = 1.0f;    // +1 clockwise (next), -1 counter-clockwise (previous)
+    bool         pillArtPulse_ = false; // same cover, new track
+    bool         pillArtInit_ = false;
+    bool         expandedAnim_ = false;   // Settings::expandedMediaAnim, latched per frame
+    bool         pillCoverAnim_ = false;  // Settings::pillCoverAnim, latched per frame
+    bool         specInit_ = false;     // audio spectrum state
+    double       specLastDrawn_ = -1.0;
+    double       specStart_ = -1.0;     // -1 = no track-change animation running
+    size_t       specKey_ = 0;
+    float        specT_ = -1.0f;        // 0..1 animation progress, <0 when idle
+    float        specDir_ = 1.0f;
+    float        specPhase_ = 0.0f;
+    float        specBass_ = 0.0f;
+    float        specBassSlow_ = 0.0f;
+    float        specKick_ = 0.0f;
+    float        specPeak_[kSpectrumBands] = {};
+    float        specPeakVel_[kSpectrumBands] = {};
+    float        progressAmp_ = 1.0f;   // wavy/squiggle bar: wave strength, eases to 0 while paused
+    double       progressLastTime_ = -1.0;
 };
 
 Activity ActivityForKind(IslandKind kind, const Settings& settings, const SharedState& state) {
@@ -11024,6 +13021,7 @@ Activity ActivityForKind(IslandKind kind, const Settings& settings, const Shared
             activity.height = 58.0f;
             break;
         case IslandKind::Volume:
+        case IslandKind::Brightness:
             activity.width = 300.0f;
             activity.height = 54.0f;
             break;
@@ -11099,6 +13097,9 @@ std::vector<IslandKind> ChooseActivities(const SharedState& state, const Setting
     }
     if (settings.volume && state.volume.active && now < state.volume.expiresAt) {
         activities.push_back(IslandKind::Volume);
+    }
+    if (settings.brightness && state.brightness.active && now < state.brightness.expiresAt) {
+        activities.push_back(IslandKind::Brightness);
     }
     if (state.notification.active && now < state.notification.expiresAt) {
         activities.push_back(IslandKind::Notification);
@@ -11795,6 +13796,9 @@ LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 if (mediaActive && currentTab == 0) {
                     const int cmd = MediaTransportHitTest(cp);
                     if (cmd != -1) {
+                        if (cmd == 0) g_skipTriggerPrev.fetch_add(1);
+                        else if (cmd == 2) g_skipTriggerNext.fetch_add(1);
+                        g_layoutDirty = true;
                         SendMediaTransportCommand(cmd);
                         return 0;
                     }
@@ -12050,6 +14054,7 @@ DWORD WINAPI RenderThreadProc(void*) {
     double nextBatteryPoll = 0.0;
     double nextProgressPoll = 0.0;
     double nextSystemPoll = 0.0;
+    double nextBrightnessPoll = 0.0;
     double nextPrivacyPoll = 0.0;
     bool wasManuallyHidden = false;
     bool wasAutoHiddenParked = false;
@@ -12210,6 +14215,10 @@ DWORD WINAPI RenderThreadProc(void*) {
                 g_state.volume.active = false;
                 snapshot.volume.active = false;
             }
+            if (g_state.brightness.active && now >= g_state.brightness.expiresAt) {
+                g_state.brightness.active = false;
+                snapshot.brightness.active = false;
+            }
             if (g_state.capsLock.active && now >= g_state.capsLock.expiresAt) {
                 g_state.capsLock.active = false;
                 snapshot.capsLock.active = false;
@@ -12292,6 +14301,7 @@ DWORD WINAPI RenderThreadProc(void*) {
         bool isTransientAlert = (primary.kind == IslandKind::Clipboard ||
                                  primary.kind == IslandKind::Notification ||
                                  primary.kind == IslandKind::Volume ||
+                                 primary.kind == IslandKind::Brightness ||
                                  primary.kind == IslandKind::BatteryLow ||
                                  primary.kind == IslandKind::CapsLock ||
                                  primary.kind == IslandKind::Device ||
@@ -12381,6 +14391,11 @@ DWORD WINAPI RenderThreadProc(void*) {
         const bool gameOverlayVisible = gameMetricsPresent && !isFullscreen;
         const bool systemMetricsVisible = hwMonitorVisible || gameOverlayVisible;
 
+        if (g_settings.brightness && now >= nextBrightnessPoll) {
+            UpdateBrightnessSnapshot();
+            nextBrightnessPoll = now + 0.25;
+        }
+
         if (now >= nextSystemPoll) {
             const bool needGpuStats = gameOverlayVisible || hwMonitorVisible;
             const bool needNetStats = hwMonitorVisible;  // net is only ever drawn in the HW dashboard
@@ -12428,6 +14443,11 @@ DWORD WINAPI RenderThreadProc(void*) {
             if (!isFullscreen && (isHoverExpanded || pinned || recentTrackChange)) {
                 primary.width = MediaLayout::kExpandedWidth * g_settings.sizeScale;
                 primary.height = MediaLayout::kExpandedHeight * g_settings.sizeScale;
+            } else if (g_settings.mediaPillClock) {
+                // Collapsed pill with the clock: 150px unless the clock needs more.
+                primary.width =
+                    renderer.MeasureMediaPill(snapshot, g_settings).totalWidth *
+                    g_settings.sizeScale;
             }
         }
 
@@ -12641,7 +14661,10 @@ DWORD WINAPI RenderThreadProc(void*) {
 
         // Idle dashboard clock changes once a minute
         static SYSTEMTIME prevTime = {};
-        if (primary.kind == IslandKind::Idle && !isHidden) {
+        const bool clockOnScreen =
+            primary.kind == IslandKind::Idle ||
+            (primary.kind == IslandKind::Media && g_settings.mediaPillClock);
+        if (clockOnScreen && !isHidden) {
             SYSTEMTIME local = {};
             GetLocalTime(&local);
             if (local.wMinute != prevTime.wMinute) {
@@ -12671,7 +14694,7 @@ DWORD WINAPI RenderThreadProc(void*) {
                                (secondary && secondary->kind == IslandKind::Timer);
         if (timerShown && snapshot.timer.running) {
             shownSecond = static_cast<int>(std::ceil(snapshot.timer.endsAt - now));
-        } else if (primary.kind == IslandKind::Idle && g_settings.showSeconds && !isHidden) {
+        } else if (clockOnScreen && g_settings.showSeconds && !isHidden) {
             SYSTEMTIME st = {};
             GetLocalTime(&st);
             shownSecond = st.wSecond;
@@ -12691,6 +14714,7 @@ DWORD WINAPI RenderThreadProc(void*) {
         static int prevRam = -1;
         static int prevDisk = -1;
         static int prevVol = -1;
+        static int prevBright = -1;
         static bool prevMuted = false;
         static int prevBat = -1;
         static bool prevCharging = false;
@@ -12721,6 +14745,7 @@ DWORD WINAPI RenderThreadProc(void*) {
             systemMetricsChanged ||
             snapshot.system.volumePercent != prevVol ||
             snapshot.system.volumeMuted != prevMuted ||
+            snapshot.brightness.percent != prevBright ||
             snapshot.battery.percent != prevBat ||
             snapshot.battery.charging != prevCharging ||
             snapshot.progress.percent != prevProg) {
@@ -12736,6 +14761,7 @@ DWORD WINAPI RenderThreadProc(void*) {
             prevDisk = snapshot.system.diskFreePercent;
             prevVol = snapshot.system.volumePercent;
             prevMuted = snapshot.system.volumeMuted;
+            prevBright = snapshot.brightness.percent;
             prevBat = snapshot.battery.percent;
             prevCharging = snapshot.battery.charging;
             prevProg = snapshot.progress.percent;
